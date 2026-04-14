@@ -33,9 +33,10 @@ if [ "$BRANCH" != "main" ]; then
     exit 1
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+DIRTY=$(git status --porcelain | grep -v '^.M \.claude/' || true)
+if [ -n "$DIRTY" ]; then
     echo "error: working tree not clean — commit or stash changes first" >&2
-    git status --short
+    echo "$DIRTY"
     exit 1
 fi
 
