@@ -1,0 +1,55 @@
+name: StartMenu
+options:
+  bundleIdPrefix: app.pavlenko
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  StartMenu:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: StartMenu
+        excludes:
+          - "Resources/Info.plist"
+    resources:
+      - path: StartMenu/Resources/Assets.xcassets
+    info:
+      path: StartMenu/Resources/Info.plist
+      properties:
+        CFBundleName: StartMenu
+        CFBundleDisplayName: Start Menu
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSUIElement: true
+        NSAccessibilityUsageDescription: "Start Menu needs Accessibility access to manage and focus windows."
+        NSAppleEventsUsageDescription: "Start Menu uses System Events to activate, close, and minimize windows of other applications."
+        NSHumanReadableCopyright: "Copyright © 2026. All rights reserved."
+        NSPrincipalClass: NSApplication
+    entitlements:
+      path: StartMenu/Resources/StartMenu.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.automation.apple-events: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.pavlenko.startmenu
+        PRODUCT_NAME: StartMenu
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: StartMenu/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+        COMBINE_HIDPI_IMAGES: YES
