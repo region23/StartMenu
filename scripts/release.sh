@@ -102,16 +102,29 @@ if [ "$BUILT_VERSION" != "$VERSION" ]; then
 fi
 
 OUT_DIR="build/release"
-ZIP_NAME="StartMenu-$VERSION.zip"
-ZIP_PATH="$OUT_DIR/$ZIP_NAME"
+DMG_NAME="StartMenu-$VERSION.dmg"
+DMG_PATH="$OUT_DIR/$DMG_NAME"
 
 mkdir -p "$OUT_DIR"
-rm -f "$ZIP_PATH"
+rm -f "$DMG_PATH"
 
-echo "==> Packaging $ZIP_PATH"
-ditto -c -k --sequesterRsrc --keepParent "$BUILT_APP" "$ZIP_PATH"
-ZIP_SIZE=$(du -h "$ZIP_PATH" | cut -f1)
-echo "==> Packaged ($ZIP_SIZE)"
+STAGING=$(mktemp -d)
+cleanup_staging() { rm -rf "$STAGING"; }
+trap cleanup_staging EXIT
+
+echo "==> Staging DMG contents"
+cp -R "$BUILT_APP" "$STAGING/StartMenu.app"
+ln -s /Applications "$STAGING/Applications"
+
+echo "==> Creating $DMG_PATH"
+hdiutil create \
+    -volname "Start Menu" \
+    -srcfolder "$STAGING" \
+    -ov \
+    -format UDZO \
+    "$DMG_PATH" >/dev/null
+DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
+echo "==> Packaged ($DMG_SIZE)"
 
 echo "==> Creating tag $TAG"
 git tag -a "$TAG" -m "Release $TAG"
@@ -121,7 +134,7 @@ echo "==> Publishing GitHub release"
 gh release create "$TAG" \
     --title "Start Menu $TAG" \
     --generate-notes \
-    "$ZIP_PATH"
+    "$DMG_PATH"
 
 RELEASE_URL=$(gh release view "$TAG" --json url --jq .url)
 echo

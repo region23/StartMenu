@@ -101,8 +101,9 @@ Modules under `StartMenu/`:
 
 ## Releases
 
-To cut a tagged release, build a Release `.app`, package it as a zip, tag
-and push, and publish a GitHub release with auto-generated release notes:
+To cut a tagged release, build a Release `.app`, package it as a DMG
+(with a drag-to-`/Applications` layout), tag and push, and publish a
+GitHub release with auto-generated release notes:
 
 ```sh
 ./scripts/release.sh 0.1.0
@@ -111,15 +112,18 @@ and push, and publish a GitHub release with auto-generated release notes:
 The script requires a clean working tree on `main`, the `gh` CLI
 authenticated, and `xcodegen` installed. It passes
 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` to `xcodebuild` so the
-version in `Info.plist` matches the tag. The build number defaults to the
-commit count on `HEAD`.
+version in `Info.plist` matches the tag; the build number defaults to the
+commit count on `HEAD`. The DMG is produced with the built-in `hdiutil`
+(UDZO compression) and contains `StartMenu.app` plus an alias to
+`/Applications` so users can drag the app in.
 
-Release artifacts land in `build/release/StartMenu-<version>.zip` and are
+Release artifacts land in `build/release/StartMenu-<version>.dmg` and are
 uploaded to the GitHub release as an asset.
 
 **Note on downloaded releases:** builds are ad-hoc signed and not
 notarized, so Gatekeeper will refuse to open the app on first launch.
-After unzipping, strip the quarantine attribute:
+After mounting the DMG and copying to `/Applications`, strip the
+quarantine attribute:
 
 ```sh
 xattr -cr /Applications/StartMenu.app
