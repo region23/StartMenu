@@ -27,7 +27,6 @@ final class StartMenuWindowController {
         settingsStore: SettingsStore,
         autostartService: AutostartService,
         onLaunch: @escaping (AppInfo) -> Void,
-        onToggleDockHide: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.settingsStore = settingsStore
@@ -59,7 +58,6 @@ final class StartMenuWindowController {
                 controllerRef.value?.hide()
             },
             onDismiss: { controllerRef.value?.hide() },
-            onToggleDockHide: onToggleDockHide,
             onQuit: onQuit
         )
         hosting = NSHostingView(rootView: view)

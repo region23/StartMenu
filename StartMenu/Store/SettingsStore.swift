@@ -8,7 +8,6 @@ final class SettingsStore: ObservableObject {
     private enum Keys {
         static let pinnedBundleIDs = "pinnedBundleIDs"
         static let uiScale = "uiScale"
-        static let hideDock = "hideDock"
     }
 
     @Published var pinnedBundleIDs: [String] {
@@ -23,17 +22,10 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    @Published var hideDock: Bool {
-        didSet {
-            UserDefaults.standard.set(hideDock, forKey: Keys.hideDock)
-        }
-    }
-
     init() {
         self.pinnedBundleIDs = UserDefaults.standard.stringArray(forKey: Keys.pinnedBundleIDs) ?? []
         let rawScale = UserDefaults.standard.double(forKey: Keys.uiScale)
         self.uiScale = rawScale > 0 ? rawScale : UIScale.medium.rawValue
-        self.hideDock = UserDefaults.standard.bool(forKey: Keys.hideDock)
     }
 
     func isPinned(_ bundleID: String) -> Bool {

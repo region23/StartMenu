@@ -8,7 +8,6 @@ struct StartMenuView: View {
     @ObservedObject var autostartService: AutostartService
     let onLaunch: (AppInfo) -> Void
     let onDismiss: () -> Void
-    let onToggleDockHide: () -> Void
     let onQuit: () -> Void
 
     @State private var query: String = ""
@@ -161,15 +160,6 @@ struct StartMenuView: View {
                     }
 
                     Divider().opacity(0.2)
-
-                    Toggle(isOn: Binding(
-                        get: { settingsStore.hideDock },
-                        set: { _ in onToggleDockHide() }
-                    )) {
-                        Text("Hide system Dock")
-                            .font(.system(size: 13 * scale))
-                    }
-                    .toggleStyle(.switch)
 
                     Toggle(isOn: Binding(
                         get: { autostartService.isEnabled },

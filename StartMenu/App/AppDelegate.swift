@@ -12,9 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        if environment.settingsStore.hideDock {
-            environment.dockControlService.hide()
-        }
+        // Always hide the system Dock while Start Menu is running. It is
+        // restored on quit via applicationWillTerminate.
+        environment.dockControlService.hide()
 
         let startMenu = StartMenuWindowController(
             startMenuService: environment.startMenuService,
@@ -23,9 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             autostartService: environment.autostartService,
             onLaunch: { [weak self] app in
                 self?.launch(app)
-            },
-            onToggleDockHide: { [weak self] in
-                self?.toggleDockHide()
             },
             onQuit: {
                 NSApp.terminate(nil)
@@ -68,17 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func launch(_ app: AppInfo) {
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.openApplication(at: app.url, configuration: config) { _, _ in }
-    }
-
-    private func toggleDockHide() {
-        let store = environment.settingsStore
-        let newValue = !store.hideDock
-        store.hideDock = newValue
-        if newValue {
-            environment.dockControlService.hide()
-        } else {
-            environment.dockControlService.restore()
-        }
     }
 
     private func showOnboarding() {
