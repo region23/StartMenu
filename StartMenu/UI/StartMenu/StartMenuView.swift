@@ -98,7 +98,11 @@ struct StartMenuView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 4 * scale) {
                 ApplicationsFolderRow(scale: scale, onActivate: { mode = .allApps })
-                    .padding(.bottom, 10 * scale)
+
+                appRow(StartMenuService.finderApp) {
+                    Button("Launch") { onLaunch(StartMenuService.finderApp) }
+                }
+                .padding(.bottom, 10 * scale)
 
                 if !dockAppsService.apps.isEmpty {
                     sectionHeader("From Dock")

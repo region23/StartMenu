@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bar.show()
         barWindowController = bar
         startMenu.setIgnoreClicksInWindow(bar.window)
+        environment.windowService.barWindow = bar.window
 
         hotkeyService.registerCtrlSpace { [weak self] in
             guard let self, let bar = self.barWindowController else { return }

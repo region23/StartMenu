@@ -9,6 +9,10 @@ final class WindowService: ObservableObject {
     @Published private(set) var windows: [WindowInfo] = []
     @Published private(set) var activeAppPID: pid_t?
 
+    /// The bar window — used to compute the clamp line so other apps
+    /// don't render under the taskbar.
+    weak var barWindow: NSWindow?
+
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
 
@@ -83,6 +87,77 @@ final class WindowService: ObservableObject {
         }
 
         if sorted != windows { windows = sorted }
+
+        clampWindowsAboveBar()
+    }
+
+    // MARK: - Clamp windows to stay above the bar
+
+    private func clampWindowsAboveBar() {
+        guard let bar = barWindow,
+              let screen = bar.screen ?? NSScreen.main else { return }
+
+        let screenHeight = screen.frame.height
+        // Bar's top edge in Cocoa coords -> converted to Quartz (origin
+        // top-left, y grows down). Windows whose Quartz bottom exceeds
+        // this value are overlapping the bar.
+        let barTopQuartz = screenHeight - bar.frame.maxY
+        let ours = ProcessInfo.processInfo.processIdentifier
+        let minAllowedHeight: CGFloat = 120
+
+        for app in NSWorkspace.shared.runningApplications {
+            guard app.activationPolicy == .regular else { continue }
+            let pid = app.processIdentifier
+            if pid == ours { continue }
+
+            let appElement = AXUIElementCreateApplication(pid)
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let ref = windowsRef else { continue }
+            let axWindows = ref as! [AXUIElement]
+
+            for ax in axWindows {
+                // Skip minimized and fullscreen — nothing to clamp.
+                var minRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(ax, kAXMinimizedAttribute as CFString, &minRef) == .success,
+                   (minRef as? Bool) == true { continue }
+
+                guard let position = axPoint(ax, attribute: kAXPositionAttribute as CFString),
+                      let size = axSize(ax, attribute: kAXSizeAttribute as CFString) else { continue }
+
+                let windowBottom = position.y + size.height
+                guard windowBottom > barTopQuartz else { continue }
+
+                let newHeight = barTopQuartz - position.y
+                if newHeight < minAllowedHeight { continue }
+
+                setAXSize(ax, size: CGSize(width: size.width, height: newHeight))
+            }
+        }
+    }
+
+    private func axPoint(_ element: AXUIElement, attribute: CFString) -> CGPoint? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
+              let value = valueRef else { return nil }
+        var point = CGPoint.zero
+        AXValueGetValue(value as! AXValue, .cgPoint, &point)
+        return point
+    }
+
+    private func axSize(_ element: AXUIElement, attribute: CFString) -> CGSize? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
+              let value = valueRef else { return nil }
+        var size = CGSize.zero
+        AXValueGetValue(value as! AXValue, .cgSize, &size)
+        return size
+    }
+
+    private func setAXSize(_ element: AXUIElement, size: CGSize) {
+        var s = size
+        guard let value = AXValueCreate(.cgSize, &s) else { return }
+        AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
     }
 
     // MARK: - Onscreen

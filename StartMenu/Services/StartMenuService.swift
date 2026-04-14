@@ -13,7 +13,8 @@ final class StartMenuService: ObservableObject {
         self.searchRoots = [
             URL(fileURLWithPath: "/Applications"),
             home.appendingPathComponent("Applications"),
-            URL(fileURLWithPath: "/System/Applications")
+            URL(fileURLWithPath: "/System/Applications"),
+            URL(fileURLWithPath: "/System/Library/CoreServices")
         ]
         Task { await rescan() }
     }
@@ -65,15 +66,40 @@ final class StartMenuService: ObservableObject {
 
                 guard let bundle = Bundle(url: url), let bid = bundle.bundleIdentifier else { continue }
                 if seen.contains(bid) { continue }
+
+                let info = bundle.infoDictionary
+                // Skip background helpers and menu-bar agents — they should
+                // not show up in a launcher.
+                if (info?["LSUIElement"] as? Bool) == true { continue }
+                if (info?["LSUIElement"] as? String) == "1" { continue }
+                if (info?["LSBackgroundOnly"] as? Bool) == true { continue }
+                if (info?["LSBackgroundOnly"] as? String) == "1" { continue }
+
                 seen.insert(bid)
 
-                let name = (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
-                    ?? (bundle.infoDictionary?["CFBundleName"] as? String)
+                let name = (info?["CFBundleDisplayName"] as? String)
+                    ?? (info?["CFBundleName"] as? String)
                     ?? url.deletingPathExtension().lastPathComponent
 
                 result.append(AppInfo(bundleID: bid, name: name, url: url))
             }
         }
+
+        // Seed Finder explicitly — CoreServices enumeration is sometimes
+        // restricted and we want Finder to always be searchable from the menu.
+        if !seen.contains("com.apple.finder") {
+            let finderURL = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
+            if fm.fileExists(atPath: finderURL.path) {
+                result.append(AppInfo(bundleID: "com.apple.finder", name: "Finder", url: finderURL))
+            }
+        }
+
         return result
     }
+
+    static let finderApp: AppInfo = AppInfo(
+        bundleID: "com.apple.finder",
+        name: "Finder",
+        url: URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
+    )
 }
