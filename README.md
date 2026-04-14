@@ -99,6 +99,34 @@ Modules under `StartMenu/`:
 - `UI/Onboarding/` — permission-request window
 - `Store/` — `SettingsStore` (`@AppStorage`-style `UserDefaults` wrapper)
 
+## Releases
+
+To cut a tagged release, build a Release `.app`, package it as a zip, tag
+and push, and publish a GitHub release with auto-generated release notes:
+
+```sh
+./scripts/release.sh 0.1.0
+```
+
+The script requires a clean working tree on `main`, the `gh` CLI
+authenticated, and `xcodegen` installed. It passes
+`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` to `xcodebuild` so the
+version in `Info.plist` matches the tag. The build number defaults to the
+commit count on `HEAD`.
+
+Release artifacts land in `build/release/StartMenu-<version>.zip` and are
+uploaded to the GitHub release as an asset.
+
+**Note on downloaded releases:** builds are ad-hoc signed and not
+notarized, so Gatekeeper will refuse to open the app on first launch.
+After unzipping, strip the quarantine attribute:
+
+```sh
+xattr -cr /Applications/StartMenu.app
+```
+
+Or right-click the app → *Open* → *Open* to accept once.
+
 ## Dev notes
 
 ### Why the rebuild always re-prompts for Accessibility
