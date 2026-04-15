@@ -8,6 +8,7 @@ struct StartMenuView: View {
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var autostartService: AutostartService
     let presentationID: UUID
+    let onHoverChange: (Bool) -> Void
     let onLaunch: (AppInfo) -> Void
     let onDismiss: () -> Void
     let onQuit: () -> Void
@@ -72,6 +73,7 @@ struct StartMenuView: View {
             resetPresentationState()
         }
         .onChange(of: presentationID) { _, _ in resetPresentationState() }
+        .onHover(perform: onHoverChange)
         .onExitCommand { onDismiss() }
     }
 

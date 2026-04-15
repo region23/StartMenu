@@ -12,8 +12,12 @@ final class StartMenuWindowController {
     private var cancellables: Set<AnyCancellable> = []
     private var lastAnchorFrame: NSRect = .zero
     private weak var ignoreClicksInWindow: NSWindow?
+    private var pendingHoverDismiss: DispatchWorkItem?
     private let makeRootView: (UUID) -> StartMenuView
     private var presentationID = UUID()
+    private var hasMouseEnteredPanel = false
+
+    private static let hoverDismissDelay: TimeInterval = 0.18
 
     /// Tells the dismiss-on-outside-click logic to leave clicks in this window alone
     /// (used for the bar: the Start button there handles toggling on its own).
@@ -59,6 +63,9 @@ final class StartMenuWindowController {
                 settingsStore: settingsStore,
                 autostartService: autostartService,
                 presentationID: presentationID,
+                onHoverChange: { inside in
+                    controllerRef.value?.handleHoverChange(inside)
+                },
                 onLaunch: { app in
                     onLaunch(app)
                     controllerRef.value?.hide()
@@ -87,6 +94,9 @@ final class StartMenuWindowController {
 
     func show(anchorFrame: NSRect) {
         lastAnchorFrame = anchorFrame
+        hasMouseEnteredPanel = false
+        pendingHoverDismiss?.cancel()
+        pendingHoverDismiss = nil
         presentationID = UUID()
         hosting.rootView = makeRootView(presentationID)
         panel.setFrame(layoutFrame(for: anchorFrame), display: true)
@@ -95,6 +105,9 @@ final class StartMenuWindowController {
     }
 
     func hide() {
+        pendingHoverDismiss?.cancel()
+        pendingHoverDismiss = nil
+        hasMouseEnteredPanel = false
         removeClickOutsideMonitors()
         panel.orderOut(nil)
     }
@@ -158,6 +171,24 @@ final class StartMenuWindowController {
         if let m = localClickMonitor { NSEvent.removeMonitor(m) }
         globalClickMonitor = nil
         localClickMonitor = nil
+    }
+
+    private func handleHoverChange(_ inside: Bool) {
+        pendingHoverDismiss?.cancel()
+        pendingHoverDismiss = nil
+
+        if inside {
+            hasMouseEnteredPanel = true
+            return
+        }
+
+        guard hasMouseEnteredPanel else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.hide()
+        }
+        pendingHoverDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverDismissDelay, execute: work)
     }
 
     private final class ControllerRef {

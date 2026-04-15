@@ -50,10 +50,16 @@ private struct MenuBarExtrasButton: View {
 
     @State private var isPresented = false
     @State private var hovering = false
+    @State private var hoveringPopover = false
+    @State private var pendingDismiss: DispatchWorkItem?
+
+    private static let dismissDelay: TimeInterval = 0.18
 
     var body: some View {
         Button {
             service.refresh()
+            pendingDismiss?.cancel()
+            pendingDismiss = nil
             isPresented.toggle()
         } label: {
             Image(systemName: "line.3.horizontal.circle.fill")
@@ -67,14 +73,35 @@ private struct MenuBarExtrasButton: View {
         }
         .buttonStyle(.plain)
         .help("Menu bar items")
-        .onHover { hovering = $0 }
+        .onHover { inside in
+            hovering = inside
+            handleHoverChange()
+        }
         .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             MenuBarExtrasPopover(
                 service: service,
                 scale: scale,
+                onHoverChange: { inside in
+                    hoveringPopover = inside
+                    handleHoverChange()
+                },
                 onDismiss: { isPresented = false }
             )
         }
+    }
+
+    private func handleHoverChange() {
+        pendingDismiss?.cancel()
+        pendingDismiss = nil
+
+        guard isPresented else { return }
+        guard !hovering && !hoveringPopover else { return }
+
+        let work = DispatchWorkItem {
+            isPresented = false
+        }
+        pendingDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.dismissDelay, execute: work)
     }
 }
 
@@ -548,6 +575,7 @@ private struct GroupWindowPickerRow: View {
 private struct MenuBarExtrasPopover: View {
     @ObservedObject var service: MenuBarExtrasService
     let scale: Double
+    let onHoverChange: (Bool) -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -615,6 +643,7 @@ private struct MenuBarExtrasPopover: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.08))
         )
+        .onHover(perform: onHoverChange)
     }
 }
 
