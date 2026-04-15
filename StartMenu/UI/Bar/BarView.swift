@@ -135,7 +135,7 @@ private struct WindowChipsList: View {
                         WindowChipView(
                             group: group,
                             isActive: group.id == activePID,
-                            isHovered: hoveredChipID == group.id,
+                            isHovered: isGroupExpanded(group.id),
                             scale: scale,
                             compact: compact
                         )
@@ -239,8 +239,16 @@ private struct WindowChipsList: View {
         if inside {
             withAnimation(Self.hoverAnimation) {
                 hoveredChipID = group.id
+                if let activePopover = popoverGroupID, activePopover != group.id {
+                    popoverGroupID = nil
+                    if hoveredPopoverGroupID == activePopover {
+                        hoveredPopoverGroupID = nil
+                    }
+                }
                 if group.count > 1 {
                     popoverGroupID = group.id
+                } else if popoverGroupID == group.id {
+                    popoverGroupID = nil
                 }
             }
             return
@@ -308,10 +316,20 @@ private struct WindowChipsList: View {
                     if hoveredPopoverGroupID == group.id {
                         hoveredPopoverGroupID = nil
                     }
-                    scheduleHoverClear(for: group.id)
+                    pendingHoverClear?.cancel()
+                    pendingHoverClear = nil
+                    withAnimation(Self.hoverAnimation) {
+                        if popoverGroupID == group.id {
+                            popoverGroupID = nil
+                        }
+                    }
                 }
             }
         )
+    }
+
+    private func isGroupExpanded(_ groupID: pid_t) -> Bool {
+        hoveredChipID == groupID || hoveredPopoverGroupID == groupID || popoverGroupID == groupID
     }
 }
 
