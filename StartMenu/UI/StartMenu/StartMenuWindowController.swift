@@ -26,6 +26,7 @@ final class StartMenuWindowController {
     init(
         startMenuService: StartMenuService,
         dockAppsService: DockAppsService,
+        appUpdateService: AppUpdateService,
         settingsStore: SettingsStore,
         autostartService: AutostartService,
         onLaunch: @escaping (AppInfo) -> Void,
@@ -54,6 +55,7 @@ final class StartMenuWindowController {
             StartMenuView(
                 startMenuService: startMenuService,
                 dockAppsService: dockAppsService,
+                appUpdateService: appUpdateService,
                 settingsStore: settingsStore,
                 autostartService: autostartService,
                 presentationID: presentationID,

@@ -4,6 +4,7 @@ import SwiftUI
 struct StartMenuView: View {
     @ObservedObject var startMenuService: StartMenuService
     @ObservedObject var dockAppsService: DockAppsService
+    @ObservedObject var appUpdateService: AppUpdateService
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var autostartService: AutostartService
     let presentationID: UUID
@@ -218,6 +219,8 @@ struct StartMenuView: View {
             .padding(.horizontal, 8 * scale)
             .padding(.vertical, 4 * scale)
 
+            updateSection
+
             linkRow(label: "Source code",
                     url: URL(string: "https://github.com/region23/StartMenu")!)
             linkRow(label: "Report an issue",
@@ -229,6 +232,83 @@ struct StartMenuView: View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
         return "\(version) (\(build))"
+    }
+
+    @ViewBuilder
+    private var updateSection: some View {
+        switch appUpdateService.status {
+        case .idle, .checking:
+            updateStatusRow(
+                title: "Homebrew updates",
+                message: "Checking for updates..."
+            )
+            .onAppear {
+                appUpdateService.refreshIfNeeded()
+            }
+
+        case .failed:
+            VStack(alignment: .leading, spacing: 8 * scale) {
+                updateStatusRow(
+                    title: "Homebrew updates",
+                    message: "Couldn't check for updates right now."
+                )
+
+                actionButtonRow {
+                    smallActionButton(title: "Check again") {
+                        appUpdateService.refreshIfNeeded(force: true)
+                    }
+                }
+            }
+
+        case .upToDate(let release):
+            VStack(alignment: .leading, spacing: 8 * scale) {
+                updateStatusRow(
+                    title: "Homebrew updates",
+                    message: "You're on the latest \(release.sourceLabel) release: \(release.version)"
+                )
+
+                actionButtonRow {
+                    smallActionButton(title: "Check again") {
+                        appUpdateService.refreshIfNeeded(force: true)
+                    }
+                }
+            }
+
+        case .updateAvailable(let currentVersion, let latest):
+            VStack(alignment: .leading, spacing: 8 * scale) {
+                VStack(alignment: .leading, spacing: 4 * scale) {
+                    Text("Update available")
+                        .font(.system(size: 13 * scale, weight: .semibold))
+                    Text("Installed: \(currentVersion) • Latest \(latest.sourceLabel): \(latest.version)")
+                        .font(.system(size: 11 * scale))
+                        .foregroundStyle(.secondary)
+                    Text("If you installed StartMenu via Homebrew, run:")
+                        .font(.system(size: 11 * scale))
+                        .foregroundStyle(.secondary)
+                    Text(verbatim: appUpdateService.upgradeCommand)
+                        .font(.system(size: 11 * scale, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 8 * scale)
+                        .padding(.vertical, 6 * scale)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .padding(.horizontal, 8 * scale)
+                .padding(.vertical, 8 * scale)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+
+                actionButtonRow {
+                    smallActionButton(title: "Copy brew command") {
+                        appUpdateService.copyUpgradeCommand()
+                    }
+                    smallActionButton(title: "Open release page") {
+                        appUpdateService.openReleasePage(for: latest)
+                    }
+                    smallActionButton(title: "Check again") {
+                        appUpdateService.refreshIfNeeded(force: true)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -248,6 +328,42 @@ struct StartMenuView: View {
             .padding(.vertical, 6 * scale)
             .background(Color.white.opacity(0.0), in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func updateStatusRow(title: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 4 * scale) {
+            Text(title)
+                .font(.system(size: 13 * scale, weight: .medium))
+            Text(message)
+                .font(.system(size: 11 * scale))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 8 * scale)
+        .padding(.vertical, 8 * scale)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func actionButtonRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 6 * scale) {
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func smallActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11 * scale, weight: .semibold))
+                .padding(.horizontal, 8 * scale)
+                .padding(.vertical, 6 * scale)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
     }

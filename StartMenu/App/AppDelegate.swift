@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let startMenu = StartMenuWindowController(
             startMenuService: environment.startMenuService,
             dockAppsService: environment.dockAppsService,
+            appUpdateService: environment.appUpdateService,
             settingsStore: environment.settingsStore,
             autostartService: environment.autostartService,
             onLaunch: { [weak self] app in
