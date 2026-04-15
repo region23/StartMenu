@@ -7,12 +7,16 @@ struct WindowInfo: Identifiable, Hashable {
     let ownerBundleID: String?
     let ownerName: String
     let title: String
+    let label: String
+    let subtitle: String?
     let bounds: CGRect
     let layer: Int
     let isOnScreen: Bool
     let isMinimized: Bool
 
     var displayTitle: String {
-        title.isEmpty ? ownerName : title
+        if !label.isEmpty { return label }
+        if !title.isEmpty { return title }
+        return ownerName
     }
 }

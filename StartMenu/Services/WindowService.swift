@@ -8,6 +8,7 @@ import os.log
 @MainActor
 final class WindowService: ObservableObject {
     private static let refreshInterval: TimeInterval = 0.2
+    private static let axDocumentAttribute = "AXDocument" as CFString
 
     @Published private(set) var windows: [WindowInfo] = []
     @Published private(set) var activeAppPID: pid_t?
@@ -151,6 +152,8 @@ final class WindowService: ObservableObject {
                 ownerBundleID: app.bundleIdentifier,
                 ownerName: name,
                 title: "",
+                label: name,
+                subtitle: nil,
                 bounds: .zero,
                 layer: 0,
                 isOnScreen: false,
@@ -169,6 +172,26 @@ final class WindowService: ObservableObject {
     private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
     private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
     private static let log = OSLog(subsystem: "app.pavlenko.startmenu", category: "clamp")
+
+    private struct AXWindowDetails {
+        let title: String
+        let documentPath: String?
+    }
+
+    private struct ResolvedWindowLabel {
+        let title: String
+        let subtitle: String?
+    }
+
+    private struct OnscreenWindowSnapshot {
+        let id: CGWindowID
+        let ownerPID: pid_t
+        let ownerBundleID: String?
+        let ownerName: String
+        let cgTitle: String
+        let bounds: CGRect
+        let layer: Int
+    }
 
     private func clampWindowsAboveBar() {
         guard let bar = barWindow,
@@ -372,6 +395,96 @@ final class WindowService: ObservableObject {
         return (window as! AXUIElement)
     }
 
+    private func copyAXString(_ element: AXUIElement, attribute: CFString) -> String {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
+              let raw = valueRef as? String else { return "" }
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func parseDocumentPath(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let url = URL(string: trimmed), url.isFileURL {
+            return url.path
+        }
+        return trimmed
+    }
+
+    private func stripAppNameSuffix(from title: String, ownerName: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        for separator in [" — ", " – ", " - ", " —", " –", " -"] {
+            let suffix = separator + ownerName
+            if trimmed.hasSuffix(suffix) {
+                return String(trimmed.dropLast(suffix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return trimmed
+    }
+
+    private func resolveWindowLabel(
+        ownerName: String,
+        cgTitle: String,
+        axTitle: String,
+        documentPath: String?
+    ) -> ResolvedWindowLabel {
+        let cleanedCGTitle = stripAppNameSuffix(from: cgTitle, ownerName: ownerName)
+        let cleanedAXTitle = stripAppNameSuffix(from: axTitle, ownerName: ownerName)
+        let resolvedDocumentPath = parseDocumentPath(documentPath)
+
+        let documentURL = resolvedDocumentPath.map { URL(fileURLWithPath: $0) }
+        let documentName = documentURL?.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let documentParent = documentURL?
+            .deletingLastPathComponent()
+            .lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let label = [cleanedCGTitle, cleanedAXTitle, documentName]
+            .first(where: { !$0.isEmpty && $0 != ownerName }) ?? ownerName
+
+        var subtitleCandidates: [String] = []
+        if !cleanedAXTitle.isEmpty && cleanedAXTitle != label {
+            subtitleCandidates.append(cleanedAXTitle)
+        }
+        if !documentParent.isEmpty && documentParent != label {
+            subtitleCandidates.append(documentParent)
+        }
+        if let resolvedDocumentPath,
+           !resolvedDocumentPath.isEmpty,
+           resolvedDocumentPath != label {
+            subtitleCandidates.append(resolvedDocumentPath)
+        }
+        if !cleanedCGTitle.isEmpty && cleanedCGTitle != label {
+            subtitleCandidates.append(cleanedCGTitle)
+        }
+
+        return ResolvedWindowLabel(
+            title: label,
+            subtitle: subtitleCandidates.first(where: { !$0.isEmpty })
+        )
+    }
+
+    private func copyAXWindowDetailsByID(for app: NSRunningApplication) -> [CGWindowID: AXWindowDetails] {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let axWindows = copyAXWindows(for: appElement)
+        guard !axWindows.isEmpty else { return [:] }
+
+        var result: [CGWindowID: AXWindowDetails] = [:]
+        for ax in axWindows {
+            var wid: CGWindowID = 0
+            guard _AXUIElementGetWindow(ax, &wid) == .success, wid != 0 else { continue }
+            result[wid] = AXWindowDetails(
+                title: copyAXString(ax, attribute: kAXTitleAttribute as CFString),
+                documentPath: parseDocumentPath(copyAXString(ax, attribute: Self.axDocumentAttribute))
+            )
+        }
+        return result
+    }
+
     private func applyClamp(
         _ ax: AXUIElement,
         from position: CGPoint,
@@ -429,12 +542,13 @@ final class WindowService: ObservableObject {
         }
 
         let running = NSWorkspace.shared.runningApplications
+        let appsByPID = Dictionary(uniqueKeysWithValues: running.map { ($0.processIdentifier, $0) })
         let bundleByPID = Dictionary(uniqueKeysWithValues: running.compactMap { app -> (pid_t, String)? in
             guard let bid = app.bundleIdentifier else { return nil }
             return (app.processIdentifier, bid)
         })
 
-        return raw.compactMap { entry in
+        let snapshots = raw.compactMap { entry -> OnscreenWindowSnapshot? in
             guard
                 let wid = entry[kCGWindowNumber as String] as? CGWindowID,
                 let pid = entry[kCGWindowOwnerPID as String] as? pid_t,
@@ -461,14 +575,55 @@ final class WindowService: ObservableObject {
             let bundleID = bundleByPID[pid]
             if title.isEmpty && bundleID == nil { return nil }
 
-            return WindowInfo(
+            return OnscreenWindowSnapshot(
                 id: wid,
                 ownerPID: pid,
                 ownerBundleID: bundleID,
                 ownerName: ownerName,
-                title: title,
+                cgTitle: title,
                 bounds: bounds,
-                layer: layer,
+                layer: layer
+            )
+        }
+
+        let pidsNeedingAXTitles = Set(
+            snapshots
+                .filter {
+                    let cgTitle = $0.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return cgTitle.isEmpty || cgTitle == $0.ownerName
+                }
+                .map(\.ownerPID)
+        )
+
+        var axDetailsByWindowID: [CGWindowID: AXWindowDetails] = [:]
+        for pid in pidsNeedingAXTitles {
+            guard let app = appsByPID[pid] else { continue }
+            axDetailsByWindowID.merge(copyAXWindowDetailsByID(for: app)) { current, _ in current }
+        }
+
+        return snapshots.map { snapshot in
+            let axDetails = axDetailsByWindowID[snapshot.id]
+            let axTitle = axDetails?.title ?? ""
+            let rawTitle = axTitle.isEmpty
+                ? snapshot.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                : axTitle
+            let resolved = resolveWindowLabel(
+                ownerName: snapshot.ownerName,
+                cgTitle: snapshot.cgTitle,
+                axTitle: axTitle,
+                documentPath: axDetails?.documentPath
+            )
+
+            return WindowInfo(
+                id: snapshot.id,
+                ownerPID: snapshot.ownerPID,
+                ownerBundleID: snapshot.ownerBundleID,
+                ownerName: snapshot.ownerName,
+                title: rawTitle,
+                label: resolved.title,
+                subtitle: resolved.subtitle,
+                bounds: snapshot.bounds,
+                layer: snapshot.layer,
                 isOnScreen: true,
                 isMinimized: false
             )
@@ -503,9 +658,13 @@ final class WindowService: ObservableObject {
                 var wid: CGWindowID = 0
                 let widErr = _AXUIElementGetWindow(ax, &wid)
 
-                var titleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(ax, kAXTitleAttribute as CFString, &titleRef)
-                let title = (titleRef as? String) ?? ""
+                let title = copyAXString(ax, attribute: kAXTitleAttribute as CFString)
+                let resolved = resolveWindowLabel(
+                    ownerName: ownerName,
+                    cgTitle: "",
+                    axTitle: title,
+                    documentPath: copyAXString(ax, attribute: Self.axDocumentAttribute)
+                )
 
                 // If the private _AXUIElementGetWindow API couldn't map
                 // this element to a CGWindowID (common for minimized
@@ -530,6 +689,8 @@ final class WindowService: ObservableObject {
                     ownerBundleID: app.bundleIdentifier,
                     ownerName: ownerName,
                     title: title,
+                    label: resolved.title,
+                    subtitle: resolved.subtitle,
                     bounds: .zero,
                     layer: 0,
                     isOnScreen: false,

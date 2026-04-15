@@ -414,7 +414,12 @@ private struct GroupWindowPicker: View {
                             Text(window.displayTitle)
                                 .font(.system(size: 12 * scale, weight: .medium))
                                 .lineLimit(1)
-                            if window.isMinimized {
+                            if let subtitle = window.subtitle, !subtitle.isEmpty {
+                                Text(window.isMinimized ? "\(subtitle) • Minimized" : subtitle)
+                                    .font(.system(size: 10 * scale))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            } else if window.isMinimized {
                                 Text("Minimized")
                                     .font(.system(size: 10 * scale))
                                     .foregroundStyle(.secondary)
