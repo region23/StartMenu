@@ -18,11 +18,12 @@ struct BarView: View {
                 groups: WindowGroup.group(windowService.windows),
                 activePID: windowService.activeAppPID,
                 scale: scale,
+                compact: settingsStore.compactChips,
                 onTap: { windowController.activate($0) },
                 onClose: { windowController.close($0) },
                 onMinimize: { windowController.minimize($0) }
             )
-            Spacer(minLength: 0)
+            .layoutPriority(1)
         }
         .padding(.horizontal, 8 * scale)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -56,34 +57,115 @@ private struct WindowChipsList: View {
     let groups: [WindowGroup]
     let activePID: pid_t?
     let scale: Double
+    let compact: Bool
     let onTap: (WindowInfo) -> Void
     let onClose: (WindowInfo) -> Void
     let onMinimize: (WindowInfo) -> Void
 
+    @State private var contentWidth: CGFloat = 0
+    @State private var viewportWidth: CGFloat = 0
+
+    private var overflows: Bool { contentWidth > viewportWidth + 1 }
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8 * scale) {
-                ForEach(groups) { group in
-                    WindowChipView(
-                        group: group,
-                        isActive: group.id == activePID,
-                        scale: scale
-                    )
-                    .onTapGesture { onTap(group.representative) }
-                    .contextMenu {
-                        if group.windows.count > 1 {
-                            ForEach(group.windows) { win in
-                                Button(win.displayTitle) { onTap(win) }
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8 * scale) {
+                    ForEach(groups) { group in
+                        WindowChipView(
+                            group: group,
+                            isActive: group.id == activePID,
+                            scale: scale,
+                            compact: compact
+                        )
+                        .id(group.id)
+                        .onTapGesture { onTap(group.representative) }
+                        .contextMenu {
+                            if group.windows.count > 1 {
+                                ForEach(group.windows) { win in
+                                    Button(win.displayTitle) { onTap(win) }
+                                }
+                                Divider()
                             }
-                            Divider()
+                            Button("Minimize") { onMinimize(group.representative) }
+                            Button("Close") { onClose(group.representative) }
                         }
-                        Button("Minimize") { onMinimize(group.representative) }
-                        Button("Close") { onClose(group.representative) }
                     }
                 }
+                .padding(.horizontal, 2)
+                .background(
+                    GeometryReader { inner in
+                        Color.clear.preference(
+                            key: ChipsContentWidthPreferenceKey.self,
+                            value: inner.size.width
+                        )
+                    }
+                )
             }
-            .padding(.horizontal, 2)
+            .background(
+                GeometryReader { outer in
+                    Color.clear
+                        .onAppear { viewportWidth = outer.size.width }
+                        .onChange(of: outer.size.width) { _, new in viewportWidth = new }
+                }
+            )
+            .onPreferenceChange(ChipsContentWidthPreferenceKey.self) { contentWidth = $0 }
+            .overlay(alignment: .leading) {
+                if overflows, let first = groups.first?.id {
+                    ScrollChevron(direction: .left, scale: scale) {
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            proxy.scrollTo(first, anchor: .leading)
+                        }
+                    }
+                    .padding(.leading, 2)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if overflows, let last = groups.last?.id {
+                    ScrollChevron(direction: .right, scale: scale) {
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            proxy.scrollTo(last, anchor: .trailing)
+                        }
+                    }
+                    .padding(.trailing, 2)
+                }
+            }
         }
+    }
+}
+
+private struct ChipsContentWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct ScrollChevron: View {
+    enum Direction { case left, right }
+
+    let direction: Direction
+    let scale: Double
+    let onTap: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onTap) {
+            Image(systemName: direction == .left ? "chevron.left" : "chevron.right")
+                .font(.system(size: 12 * scale, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 22 * scale, height: 28 * scale)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.black.opacity(hovering ? 0.55 : 0.35))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -91,10 +173,12 @@ private struct WindowChipView: View {
     let group: WindowGroup
     let isActive: Bool
     let scale: Double
+    let compact: Bool
     @State private var hovering = false
 
     private var representative: WindowInfo { group.representative }
     private var dimmed: Bool { group.isAllMinimized }
+    private var showLabel: Bool { !compact || hovering }
 
     var body: some View {
         HStack(spacing: 6 * scale) {
@@ -105,13 +189,20 @@ private struct WindowChipView: View {
                     .frame(width: 20 * scale, height: 20 * scale)
                     .opacity(dimmed ? 0.55 : 1.0)
             }
-            Text(representative.displayTitle)
-                .font(.system(size: 12 * scale))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: 170 * scale, alignment: .leading)
-                .opacity(dimmed ? 0.6 : 1.0)
-                .italic(dimmed)
+            if showLabel {
+                Text(representative.displayTitle)
+                    .font(.system(size: 12 * scale))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 170 * scale, alignment: .leading)
+                    .opacity(dimmed ? 0.6 : 1.0)
+                    .italic(dimmed)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .leading)),
+                        removal: .opacity.combined(with: .move(edge: .leading))
+                    ))
+            }
             if group.count > 1 {
                 Text("\(group.count)")
                     .font(.system(size: 11 * scale, weight: .semibold))
@@ -145,6 +236,7 @@ private struct WindowChipView: View {
                     .offset(y: 4 * scale)
             }
         }
+        .animation(.easeOut(duration: 0.18), value: showLabel)
         .onHover { hovering = $0 }
         .help(representative.displayTitle)
     }

@@ -18,6 +18,8 @@
 /* Settings */
 "UI Scale" = "UI Scale";
 "Launch at login" = "Launch at login";
+"Compact chips (icon only)" = "Compact chips (icon only)";
+"Chips show only the app icon and expand on hover." = "Chips show only the app icon and expand on hover.";
 "About" = "About";
 "Version" = "Version";
 "Source code" = "Source code";

@@ -174,6 +174,17 @@ struct StartMenuView: View {
                     }
                     .toggleStyle(.switch)
 
+                    Toggle(isOn: $settingsStore.compactChips) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Compact chips (icon only)")
+                                .font(.system(size: 13 * scale))
+                            Text("Chips show only the app icon and expand on hover.")
+                                .font(.system(size: 11 * scale))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+
                     Divider().opacity(0.2)
 
                     aboutSection
