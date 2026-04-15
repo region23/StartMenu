@@ -58,7 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.startMenuWindowController?.toggle(anchorFrame: bar.currentStartFrame)
         }
 
-        if !environment.permissionsService.hasAccessibility || !environment.permissionsService.hasScreenRecording {
+        // Screen Recording is reserved for a future feature (window
+        // thumbnails on hover) and not surfaced in the onboarding UI.
+        // Gate onboarding on Accessibility only — otherwise every launch
+        // flashes the Setup window until that unrelated grant is given.
+        if !environment.permissionsService.hasAccessibility {
             showOnboarding()
         }
     }
