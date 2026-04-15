@@ -174,6 +174,14 @@ cask "startmenu" do
 
   app "StartMenu.app"
 
+  postflight do
+    # Ad-hoc signed, not notarized — strip the quarantine attribute
+    # Homebrew applies to every downloaded cask so Gatekeeper doesn't
+    # block the first launch.
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/StartMenu.app"]
+  end
+
   zap trash: [
     "~/Library/Preferences/app.pavlenko.startmenu.plist",
     "~/Library/Application Support/app.pavlenko.startmenu",
