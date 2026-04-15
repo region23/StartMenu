@@ -384,12 +384,13 @@ private struct WindowChipView: View {
     let compact: Bool
 
     private var representative: WindowInfo { group.representative }
+    private var chipTitle: String { group.ownerName }
     private var dimmed: Bool { group.isAllMinimized }
     private var showLabel: Bool { !compact || isHovered }
     private var labelWidth: CGFloat {
         guard showLabel else { return 0 }
         let font = NSFont.systemFont(ofSize: 12 * scale)
-        let raw = (representative.displayTitle as NSString).size(withAttributes: [.font: font]).width
+        let raw = (chipTitle as NSString).size(withAttributes: [.font: font]).width
         return min(170 * scale, ceil(raw))
     }
 
@@ -402,7 +403,7 @@ private struct WindowChipView: View {
                     .frame(width: 20 * scale, height: 20 * scale)
                     .opacity(dimmed ? 0.55 : 1.0)
             }
-            Text(representative.displayTitle)
+            Text(chipTitle)
                 .font(.system(size: 12 * scale))
                 .lineLimit(1)
                 .truncationMode(.tail)

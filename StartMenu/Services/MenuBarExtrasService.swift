@@ -14,6 +14,42 @@ final class MenuBarExtrasService: ObservableObject {
 
     private static let refreshInterval: TimeInterval = 3.0
     private static let minimumVisibleItemSize = CGSize(width: 8, height: 8)
+    private static let excludedOwnerNames: Set<String> = [
+        "Control Center",
+        "Пункт управления",
+        "SystemUIServer",
+        "TextInputMenuAgent",
+        "Spotlight",
+        "ControlCentre",
+        "ControlCenter"
+    ]
+    private static let excludedBundleIDs: Set<String> = [
+        "com.apple.controlcenter",
+        "com.apple.systemuiserver",
+        "com.apple.Spotlight",
+        "com.apple.TextInputMenuAgent"
+    ]
+    private static let excludedLabels: Set<String> = [
+        "control center",
+        "пункт управления",
+        "spotlight",
+        "поиск",
+        "textinputmenuagent",
+        "часы",
+        "clock",
+        "фокусирование",
+        "focus",
+        "не беспокоить",
+        "do not disturb",
+        "исполняется",
+        "now playing",
+        "wi-fi",
+        "wifi",
+        "wi-fi, подключено",
+        "сеть",
+        "звук",
+        "volume"
+    ]
 
     init() {
         refresh()
@@ -61,6 +97,8 @@ final class MenuBarExtrasService: ObservableObject {
 
             let ownerName = app.localizedName ?? app.bundleIdentifier ?? "Menu Bar Item"
             let ownerBundleID = app.bundleIdentifier
+            if Self.excludedOwnerNames.contains(ownerName) { continue }
+            if let ownerBundleID, Self.excludedBundleIDs.contains(ownerBundleID) { continue }
 
             for (index, child) in children.enumerated() {
                 let title = copyString(child, attribute: kAXTitleAttribute as CFString) ?? ""
@@ -201,14 +239,11 @@ final class MenuBarExtrasService: ObservableObject {
 
         let label = normalized(item.displayTitle)
         if label.isEmpty { return false }
-
-        // Control Center exposes a bunch of internal AX children that are
-        // not distinct visible status items. We keep the genuinely visible
-        // actionable entries and collapse repeated generic "Control Center"
-        // rows later.
-        if label == "control center" || label == "пункт управления" {
-            return true
+        if Self.excludedOwnerNames.contains(item.ownerName) { return false }
+        if let bundleID = item.ownerBundleID, Self.excludedBundleIDs.contains(bundleID) {
+            return false
         }
+        if Self.excludedLabels.contains(label) { return false }
 
         return true
     }
@@ -250,9 +285,7 @@ final class MenuBarExtrasService: ObservableObject {
         let rhsLabel = normalized(rhs.displayTitle)
         guard !lhsLabel.isEmpty, lhsLabel == rhsLabel else { return false }
 
-        // Generic duplicated rows from Control Center and similar system
-        // hosts are not useful to show multiple times.
-        if lhsLabel == "control center" || lhsLabel == "пункт управления" {
+        if Self.excludedLabels.contains(lhsLabel) {
             return true
         }
 
