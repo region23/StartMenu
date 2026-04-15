@@ -3,6 +3,7 @@ import ApplicationServices
 import Combine
 import CoreGraphics
 import Foundation
+import os.log
 
 @MainActor
 final class WindowService: ObservableObject {
@@ -93,45 +94,105 @@ final class WindowService: ObservableObject {
 
     // MARK: - Clamp windows to stay above the bar
 
+    private static let axFullScreenAttribute = "AXFullScreen" as CFString
+    private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
+    private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
+    private static let log = OSLog(subsystem: "app.pavlenko.startmenu", category: "clamp")
+
+    /// PIDs we've recently kicked out of fullscreen via keystroke — used to
+    /// avoid spamming the shortcut every half-second.
+    private var lastFullscreenKick: [pid_t: Date] = [:]
+
     private func clampWindowsAboveBar() {
         guard let bar = barWindow,
               let screen = bar.screen ?? NSScreen.main else { return }
 
         let screenHeight = screen.frame.height
-        // Bar's top edge in Cocoa coords -> converted to Quartz (origin
-        // top-left, y grows down). Windows whose Quartz bottom exceeds
-        // this value are overlapping the bar.
+        let visible = screen.visibleFrame
+        // Top of usable area (Quartz). Menu bar lives above this.
+        let topQuartz = screenHeight - visible.maxY
+        // Bar's top edge in Quartz.
         let barTopQuartz = screenHeight - bar.frame.maxY
+        let usableHeight = barTopQuartz - topQuartz
         let ours = ProcessInfo.processInfo.processIdentifier
-        let minAllowedHeight: CGFloat = 120
 
         for app in NSWorkspace.shared.runningApplications {
             guard app.activationPolicy == .regular else { continue }
             let pid = app.processIdentifier
             if pid == ours { continue }
+            let name = app.localizedName ?? "?"
 
             let appElement = AXUIElementCreateApplication(pid)
+
             var windowsRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                  let ref = windowsRef else { continue }
+            var listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            // Chromium/Electron apps keep their AX tree dormant. Flip
+            // both known "wake up" attributes and retry once.
+            if listErr == .apiDisabled || listErr == .cannotComplete {
+                AXUIElementSetAttributeValue(appElement, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
+                AXUIElementSetAttributeValue(appElement, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
+                listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+            }
+
+            guard listErr == .success, let ref = windowsRef else {
+                // AX refused us. Fall back to CGWindowList + keystroke
+                // injection if the app has a window under our bar.
+                forceExitFullscreenIfNeeded(pid: pid, name: name, barTopQuartz: barTopQuartz)
+                continue
+            }
             let axWindows = ref as! [AXUIElement]
+            if axWindows.isEmpty { continue }
 
             for ax in axWindows {
-                // Skip minimized and fullscreen — nothing to clamp.
                 var minRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(ax, kAXMinimizedAttribute as CFString, &minRef) == .success,
                    (minRef as? Bool) == true { continue }
 
-                guard let position = axPoint(ax, attribute: kAXPositionAttribute as CFString),
-                      let size = axSize(ax, attribute: kAXSizeAttribute as CFString) else { continue }
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(ax, kAXRoleAttribute as CFString, &roleRef)
+                let role = (roleRef as? String) ?? "?"
+                var subroleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(ax, kAXSubroleAttribute as CFString, &subroleRef)
+                let subrole = (subroleRef as? String) ?? "?"
+
+                var fsRef: CFTypeRef?
+                let fsReadErr = AXUIElementCopyAttributeValue(ax, Self.axFullScreenAttribute, &fsRef)
+                let isFullscreen = (fsReadErr == .success) && ((fsRef as? Bool) == true)
+
+                let position = axPoint(ax, attribute: kAXPositionAttribute as CFString) ?? .zero
+                let size = axSize(ax, attribute: kAXSizeAttribute as CFString) ?? .zero
+
+                // Only touch real application windows. This drops Finder's
+                // Desktop (role=AXScrollArea), palettes, tooltips, etc.
+                if role != kAXWindowRole as String { continue }
+                if subrole != kAXStandardWindowSubrole as String { continue }
+
+                if isFullscreen {
+                    let setErr = AXUIElementSetAttributeValue(ax, Self.axFullScreenAttribute, kCFBooleanFalse)
+                    os_log("exit-fullscreen pid=%{public}d name=%{public}@ setErr=%{public}d",
+                           log: Self.log, type: .info, pid, name, setErr.rawValue)
+                    continue
+                }
 
                 let windowBottom = position.y + size.height
-                guard windowBottom > barTopQuartz else { continue }
+                let extendsPastBar = windowBottom > barTopQuartz + 0.5
+                let startsAboveTop = position.y < topQuartz - 0.5
+                guard extendsPastBar || startsAboveTop else { continue }
 
-                let newHeight = barTopQuartz - position.y
-                if newHeight < minAllowedHeight { continue }
+                let newY = max(position.y, topQuartz)
+                let maxHeight = barTopQuartz - newY
+                let newHeight = min(size.height, maxHeight)
+                if newHeight < 80 || usableHeight < 80 { continue }
 
-                setAXSize(ax, size: CGSize(width: size.width, height: newHeight))
+                if abs(newY - position.y) > 0.5 {
+                    setAXPosition(ax, point: CGPoint(x: position.x, y: newY))
+                }
+                if abs(newHeight - size.height) > 0.5 {
+                    setAXSize(ax, size: CGSize(width: size.width, height: newHeight))
+                }
+                os_log("clamp pid=%{public}d name=%{public}@ oldY=%{public}.0f oldH=%{public}.0f -> newY=%{public}.0f newH=%{public}.0f",
+                       log: Self.log, type: .info, pid, name, position.y, size.height, newY, newHeight)
             }
         }
     }
@@ -158,6 +219,66 @@ final class WindowService: ObservableObject {
         var s = size
         guard let value = AXValueCreate(.cgSize, &s) else { return }
         AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
+    }
+
+    private func setAXPosition(_ element: AXUIElement, point: CGPoint) {
+        var p = point
+        guard let value = AXValueCreate(.cgPoint, &p) else { return }
+        AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
+    }
+
+    // MARK: - Keystroke fallback (for apps that refuse AX, e.g. Claude)
+
+    private func forceExitFullscreenIfNeeded(pid: pid_t, name: String, barTopQuartz: CGFloat) {
+        guard let raw = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else { return }
+
+        var hasOverlap = false
+        for entry in raw {
+            guard let wpid = entry[kCGWindowOwnerPID as String] as? pid_t, wpid == pid else { continue }
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+            guard let dict = entry[kCGWindowBounds as String] as? NSDictionary else { continue }
+            var bounds = CGRect.zero
+            CGRectMakeWithDictionaryRepresentation(dict as CFDictionary, &bounds)
+            if bounds.width < 60 || bounds.height < 40 { continue }
+            // CGWindowBounds are already in Quartz (top-left origin).
+            if bounds.maxY > barTopQuartz + 0.5 {
+                hasOverlap = true
+                break
+            }
+        }
+
+        guard hasOverlap else { return }
+
+        // Only kick the frontmost app — otherwise we'd steal the
+        // keystroke from whatever the user is actually typing into.
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard frontPID == pid else {
+            os_log("skip-kick pid=%{public}d name=%{public}@ reason=not-frontmost front=%{public}d",
+                   log: Self.log, type: .info, pid, name, frontPID ?? -1)
+            return
+        }
+
+        if let last = lastFullscreenKick[pid], Date().timeIntervalSince(last) < 3.0 { return }
+        lastFullscreenKick[pid] = Date()
+
+        sendCtrlCmdF()
+        os_log("force-exit-fullscreen via Ctrl+Cmd+F pid=%{public}d name=%{public}@",
+               log: Self.log, type: .info, pid, name)
+    }
+
+    private func sendCtrlCmdF() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let fKey: CGKeyCode = 0x03 // kVK_ANSI_F
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: fKey, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: fKey, keyDown: false) else { return }
+        let flags: CGEventFlags = [.maskCommand, .maskControl]
+        down.flags = flags
+        up.flags = flags
+        down.post(tap: .cgSessionEventTap)
+        up.post(tap: .cgSessionEventTap)
     }
 
     // MARK: - Onscreen
@@ -236,21 +357,37 @@ final class WindowService: ObservableObject {
                   let ref = windowsRef else { continue }
             let axWindows = ref as! [AXUIElement]
 
-            for ax in axWindows {
+            for (index, ax) in axWindows.enumerated() {
                 var minRef: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(ax, kAXMinimizedAttribute as CFString, &minRef) == .success,
                       let minBool = minRef as? Bool, minBool else { continue }
 
                 var wid: CGWindowID = 0
-                guard _AXUIElementGetWindow(ax, &wid) == .success else { continue }
-                if excludingIDs.contains(wid) { continue }
+                let widErr = _AXUIElementGetWindow(ax, &wid)
 
                 var titleRef: CFTypeRef?
                 AXUIElementCopyAttributeValue(ax, kAXTitleAttribute as CFString, &titleRef)
                 let title = (titleRef as? String) ?? ""
 
+                // If the private _AXUIElementGetWindow API couldn't map
+                // this element to a CGWindowID (common for minimized
+                // windows), synthesize a stable-ish id from pid + title
+                // so the chip stays on the bar instead of vanishing.
+                var resolvedID = wid
+                if widErr != .success || wid == 0 {
+                    var hasher = Hasher()
+                    hasher.combine(pid)
+                    hasher.combine(title)
+                    hasher.combine(index)
+                    // Put synthetic ids in the high 1G range to avoid
+                    // colliding with real CGWindowIDs (small integers).
+                    resolvedID = CGWindowID(0xC000_0000 | UInt32(truncatingIfNeeded: hasher.finalize() & 0x3FFF_FFFF))
+                }
+
+                if excludingIDs.contains(resolvedID) { continue }
+
                 result.append(WindowInfo(
-                    id: wid,
+                    id: resolvedID,
                     ownerPID: pid,
                     ownerBundleID: app.bundleIdentifier,
                     ownerName: ownerName,
@@ -261,6 +398,7 @@ final class WindowService: ObservableObject {
                     isMinimized: true
                 ))
             }
+
         }
 
         return result
