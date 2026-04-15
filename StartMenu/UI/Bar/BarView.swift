@@ -62,10 +62,21 @@ private struct WindowChipsList: View {
     let onClose: (WindowInfo) -> Void
     let onMinimize: (WindowInfo) -> Void
 
-    @State private var contentWidth: CGFloat = 0
+    @State private var chipFrames: [pid_t: CGRect] = [:]
     @State private var viewportWidth: CGFloat = 0
 
-    private var overflows: Bool { contentWidth > viewportWidth + 1 }
+    private static let coordinateSpaceName = "chipScroll"
+    private static let edgeSlack: CGFloat = 1.0
+
+    private var canScrollLeft: Bool {
+        guard let firstID = groups.first?.id, let frame = chipFrames[firstID] else { return false }
+        return frame.minX < -Self.edgeSlack
+    }
+
+    private var canScrollRight: Bool {
+        guard let lastID = groups.last?.id, let frame = chipFrames[lastID] else { return false }
+        return frame.maxX > viewportWidth + Self.edgeSlack
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -79,6 +90,14 @@ private struct WindowChipsList: View {
                             compact: compact
                         )
                         .id(group.id)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: ChipFramesPreferenceKey.self,
+                                    value: [group.id: geo.frame(in: .named(Self.coordinateSpaceName))]
+                                )
+                            }
+                        )
                         .onTapGesture { onTap(group.representative) }
                         .contextMenu {
                             if group.windows.count > 1 {
@@ -93,15 +112,8 @@ private struct WindowChipsList: View {
                     }
                 }
                 .padding(.horizontal, 2)
-                .background(
-                    GeometryReader { inner in
-                        Color.clear.preference(
-                            key: ChipsContentWidthPreferenceKey.self,
-                            value: inner.size.width
-                        )
-                    }
-                )
             }
+            .coordinateSpace(name: Self.coordinateSpaceName)
             .background(
                 GeometryReader { outer in
                     Color.clear
@@ -109,35 +121,39 @@ private struct WindowChipsList: View {
                         .onChange(of: outer.size.width) { _, new in viewportWidth = new }
                 }
             )
-            .onPreferenceChange(ChipsContentWidthPreferenceKey.self) { contentWidth = $0 }
+            .onPreferenceChange(ChipFramesPreferenceKey.self) { chipFrames = $0 }
             .overlay(alignment: .leading) {
-                if overflows, let first = groups.first?.id {
+                if canScrollLeft, let first = groups.first?.id {
                     ScrollChevron(direction: .left, scale: scale) {
                         withAnimation(.easeOut(duration: 0.22)) {
                             proxy.scrollTo(first, anchor: .leading)
                         }
                     }
                     .padding(.leading, 2)
+                    .transition(.opacity)
                 }
             }
             .overlay(alignment: .trailing) {
-                if overflows, let last = groups.last?.id {
+                if canScrollRight, let last = groups.last?.id {
                     ScrollChevron(direction: .right, scale: scale) {
                         withAnimation(.easeOut(duration: 0.22)) {
                             proxy.scrollTo(last, anchor: .trailing)
                         }
                     }
                     .padding(.trailing, 2)
+                    .transition(.opacity)
                 }
             }
+            .animation(.easeOut(duration: 0.15), value: canScrollLeft)
+            .animation(.easeOut(duration: 0.15), value: canScrollRight)
         }
     }
 }
 
-private struct ChipsContentWidthPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+private struct ChipFramesPreferenceKey: PreferenceKey {
+    static var defaultValue: [pid_t: CGRect] = [:]
+    static func reduce(value: inout [pid_t: CGRect], nextValue: () -> [pid_t: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
