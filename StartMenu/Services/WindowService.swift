@@ -80,7 +80,8 @@ final class WindowService: ObservableObject {
     func refresh() {
         let onscreen = collectOnscreenWindows()
         let minimized = collectMinimizedWindows(excludingIDs: Set(onscreen.map(\.id)))
-        let combined = (onscreen + minimized)
+        let placeholders = placeholdersForInvisibleApps(existingPIDs: Set((onscreen + minimized).map(\.ownerPID)))
+        let combined = onscreen + minimized + placeholders
 
         let sorted = combined.sorted {
             if $0.ownerName == $1.ownerName { return $0.id < $1.id }
@@ -90,6 +91,53 @@ final class WindowService: ObservableObject {
         if sorted != windows { windows = sorted }
 
         clampWindowsAboveBar()
+    }
+
+    /// For every running `.regular` application that wasn't picked up
+    /// via CGWindowList or the AX minimized scan, synthesize a single
+    /// placeholder window so the bar still shows a chip. This catches
+    /// three cases in one net:
+    ///
+    /// 1. Chromium/Electron apps (Claude, VSCode, Cursor, ...) that
+    ///    return `kAXErrorAPIDisabled` from the AX API. Once their
+    ///    window gets minimized it vanishes from CGWindowList too, and
+    ///    without a placeholder the chip would disappear.
+    /// 2. Apps where the user closed the last window with the red
+    ///    traffic light but the process is still alive and can accept
+    ///    a reopen event.
+    /// 3. Apps whose visible windows live on a different Space.
+    private func placeholdersForInvisibleApps(existingPIDs: Set<pid_t>) -> [WindowInfo] {
+        let ours = ProcessInfo.processInfo.processIdentifier
+        var result: [WindowInfo] = []
+
+        for app in NSWorkspace.shared.runningApplications {
+            guard app.activationPolicy == .regular else { continue }
+            let pid = app.processIdentifier
+            if pid == ours { continue }
+            if existingPIDs.contains(pid) { continue }
+            let name = app.localizedName ?? ""
+            if Self.excludedOwnerNames.contains(name) { continue }
+            if name.isEmpty { continue }
+
+            // Stable per-PID synthetic id, parked in the high 0xE-range
+            // so it never collides with real CGWindowIDs (small) or the
+            // synthetic ids collectMinimizedWindows hands out (0xC-range).
+            let synthID = CGWindowID(0xE000_0000 | (UInt32(bitPattern: pid) & 0x1FFF_FFFF))
+
+            result.append(WindowInfo(
+                id: synthID,
+                ownerPID: pid,
+                ownerBundleID: app.bundleIdentifier,
+                ownerName: name,
+                title: "",
+                bounds: .zero,
+                layer: 0,
+                isOnScreen: false,
+                isMinimized: true
+            ))
+        }
+
+        return result
     }
 
     // MARK: - Clamp windows to stay above the bar

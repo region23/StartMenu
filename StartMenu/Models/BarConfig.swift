@@ -11,11 +11,11 @@ enum UIScale: Double, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .small: return "Small"
-        case .medium: return "Medium"
-        case .large: return "Large"
-        case .xlarge: return "Extra Large"
-        case .xxlarge: return "Huge"
+        case .small: return String(localized: "Small")
+        case .medium: return String(localized: "Medium")
+        case .large: return String(localized: "Large")
+        case .xlarge: return String(localized: "Extra Large")
+        case .xxlarge: return String(localized: "Huge")
         }
     }
 

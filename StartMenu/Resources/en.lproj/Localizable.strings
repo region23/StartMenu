@@ -1,0 +1,41 @@
+/* StartMenu — English localization. Keys mirror the LocalizedStringKey
+   values used in the SwiftUI code so English is also the development
+   default. CFBundleDevelopmentRegion=en makes this the fallback for any
+   system language other than Russian. */
+
+"Search apps" = "Search apps";
+"No apps found" = "No apps found";
+"No applications found" = "No applications found";
+"Launch" = "Launch";
+"Applications" = "Applications";
+"From Dock" = "From Dock";
+"Back" = "Back";
+"Settings" = "Settings";
+"Quit Start Menu" = "Quit Start Menu";
+"Minimize" = "Minimize";
+"Close" = "Close";
+
+/* Settings */
+"UI Scale" = "UI Scale";
+"Launch at login" = "Launch at login";
+"About" = "About";
+"Version" = "Version";
+"Source code" = "Source code";
+"Report an issue" = "Report an issue";
+
+/* UI scale labels */
+"Small" = "Small";
+"Medium" = "Medium";
+"Large" = "Large";
+"Extra Large" = "Extra Large";
+"Huge" = "Huge";
+
+/* Onboarding */
+"Start Menu — Setup" = "Start Menu — Setup";
+"Welcome to Start Menu" = "Welcome to Start Menu";
+"Grant Accessibility so Start Menu can enumerate, focus, close, and minimize windows of other apps." = "Grant Accessibility so Start Menu can enumerate, focus, close, and minimize windows of other apps.";
+"Accessibility" = "Accessibility";
+"Required to focus, raise, and manage windows." = "Required to focus, raise, and manage windows.";
+"Request" = "Request";
+"Open Settings" = "Open Settings";
+"Recheck" = "Recheck";

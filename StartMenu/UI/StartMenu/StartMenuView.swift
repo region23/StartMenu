@@ -147,7 +147,7 @@ struct StartMenuView: View {
                                 HStack {
                                     Image(systemName: isSelectedScale(option) ? "largecircle.fill.circle" : "circle")
                                         .foregroundStyle(.white)
-                                    Text("\(option.label)  \(Int(option.rawValue * 100))%")
+                                    Text(verbatim: "\(option.label)  \(Int(option.rawValue * 100))%")
                                         .font(.system(size: 13 * scale))
                                     Spacer()
                                 }
@@ -173,9 +173,66 @@ struct StartMenuView: View {
                             .font(.system(size: 13 * scale))
                     }
                     .toggleStyle(.switch)
+
+                    Divider().opacity(0.2)
+
+                    aboutSection
                 }
             }
         }
+    }
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 6 * scale) {
+            Text("About")
+                .font(.system(size: 11 * scale, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+
+            HStack {
+                Text("Version")
+                    .font(.system(size: 13 * scale))
+                Spacer()
+                Text(appVersionLabel)
+                    .font(.system(size: 13 * scale))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 8 * scale)
+            .padding(.vertical, 4 * scale)
+
+            linkRow(label: "Source code",
+                    url: URL(string: "https://github.com/region23/StartMenu")!)
+            linkRow(label: "Report an issue",
+                    url: URL(string: "https://github.com/region23/StartMenu/issues/new")!)
+        }
+    }
+
+    private var appVersionLabel: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+        return "\(version) (\(build))"
+    }
+
+    @ViewBuilder
+    private func linkRow(label: LocalizedStringKey, url: URL) -> some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            HStack {
+                Text(label)
+                    .font(.system(size: 13 * scale))
+                Spacer()
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12 * scale))
+            }
+            .padding(.horizontal, 8 * scale)
+            .padding(.vertical, 6 * scale)
+            .background(Color.white.opacity(0.0), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Footer
@@ -195,7 +252,7 @@ struct StartMenuView: View {
     }
 
     @ViewBuilder
-    private func footerButton(systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+    private func footerButton(systemImage: String, help: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 16 * scale))
@@ -230,7 +287,7 @@ struct StartMenuView: View {
     }
 
     @ViewBuilder
-    private func sectionHeader(_ title: String) -> some View {
+    private func sectionHeader(_ title: LocalizedStringKey) -> some View {
         Text(title)
             .font(.system(size: 11 * scale, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -239,7 +296,7 @@ struct StartMenuView: View {
     }
 
     @ViewBuilder
-    private func appList(_ items: [AppInfo], emptyText: String) -> some View {
+    private func appList(_ items: [AppInfo], emptyText: LocalizedStringKey) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2 * scale) {
                 ForEach(items) { app in

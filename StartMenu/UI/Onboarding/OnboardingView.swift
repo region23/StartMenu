@@ -53,11 +53,11 @@ struct OnboardingView: View {
 }
 
 private struct PermissionRow: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
     let granted: Bool
-    let primaryAction: (String, () -> Void)
-    let secondaryAction: (String, () -> Void)
+    let primaryAction: (LocalizedStringKey, () -> Void)
+    let secondaryAction: (LocalizedStringKey, () -> Void)
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {

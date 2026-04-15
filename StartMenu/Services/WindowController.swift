@@ -18,6 +18,21 @@ final class WindowController {
             if getMinimized(of: ax) == true {
                 AXUIElementSetAttributeValue(ax, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
             }
+            return
+        }
+
+        // No AX window found — happens for apps that disabled the
+        // Accessibility API (Chromium/Electron) or for a placeholder
+        // chip we synthesized because the app has no visible window.
+        // Fall back to LaunchServices openApplication which triggers
+        // applicationShouldHandleReopen on the already-running target.
+        // Most macOS apps respond by unminimizing their main window or
+        // opening a fresh one.
+        if let running = NSRunningApplication(processIdentifier: window.ownerPID),
+           let url = running.bundleURL {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in }
         }
     }
 

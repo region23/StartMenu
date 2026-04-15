@@ -12,7 +12,7 @@ final class OnboardingWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Start Menu — Setup"
+        window.title = String(localized: "Start Menu — Setup")
         window.center()
         window.isReleasedWhenClosed = false
 

@@ -1,0 +1,38 @@
+/* StartMenu — русская локализация. */
+
+"Search apps" = "Поиск приложений";
+"No apps found" = "Ничего не найдено";
+"No applications found" = "Приложения не найдены";
+"Launch" = "Запустить";
+"Applications" = "Приложения";
+"From Dock" = "Из Dock";
+"Back" = "Назад";
+"Settings" = "Настройки";
+"Quit Start Menu" = "Выйти из Start Menu";
+"Minimize" = "Свернуть";
+"Close" = "Закрыть";
+
+/* Settings */
+"UI Scale" = "Масштаб интерфейса";
+"Launch at login" = "Запускать при входе в систему";
+"About" = "О программе";
+"Version" = "Версия";
+"Source code" = "Исходный код";
+"Report an issue" = "Сообщить о проблеме";
+
+/* UI scale labels */
+"Small" = "Маленький";
+"Medium" = "Средний";
+"Large" = "Большой";
+"Extra Large" = "Очень большой";
+"Huge" = "Огромный";
+
+/* Onboarding */
+"Start Menu — Setup" = "Start Menu — Настройка";
+"Welcome to Start Menu" = "Добро пожаловать в Start Menu";
+"Grant Accessibility so Start Menu can enumerate, focus, close, and minimize windows of other apps." = "Выдайте разрешение Accessibility, чтобы Start Menu мог перечислять, фокусировать, закрывать и сворачивать окна других приложений.";
+"Accessibility" = "Универсальный доступ";
+"Required to focus, raise, and manage windows." = "Необходимо для управления окнами — фокус, поднятие на передний план, закрытие.";
+"Request" = "Запросить";
+"Open Settings" = "Открыть настройки";
+"Recheck" = "Проверить снова";

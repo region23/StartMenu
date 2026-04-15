@@ -35,6 +35,10 @@ targets:
         CFBundleDisplayName: Start Menu
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations:
+          - en
+          - ru
         LSMinimumSystemVersion: "14.0"
         LSUIElement: true
         NSAccessibilityUsageDescription: "Start Menu needs Accessibility access to manage and focus windows."
