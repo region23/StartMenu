@@ -138,6 +138,62 @@ gh release create "$TAG" \
     "$DMG_PATH"
 
 RELEASE_URL=$(gh release view "$TAG" --json url --jq .url)
+
+# -- Homebrew cask update -----------------------------------------------
+# Mirror the new version into region23/homebrew-tap so
+# `brew upgrade --cask region23/tap/startmenu` sees the release.
+
+TAP_REPO="region23/homebrew-tap"
+TAP_CHECKOUT="$OUT_DIR/homebrew-tap"
+CASK_PATH="$TAP_CHECKOUT/Casks/startmenu.rb"
+DMG_SHA=$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')
+
+echo "==> Updating Homebrew tap ($TAP_REPO)"
+rm -rf "$TAP_CHECKOUT"
+if ! gh repo clone "$TAP_REPO" "$TAP_CHECKOUT" -- --quiet; then
+    echo "warning: could not clone $TAP_REPO — skipping cask update" >&2
+else
+    mkdir -p "$(dirname "$CASK_PATH")"
+    cat > "$CASK_PATH" <<CASK
+cask "startmenu" do
+  version "$VERSION"
+  sha256 "$DMG_SHA"
+
+  url "https://github.com/region23/StartMenu/releases/download/v#{version}/StartMenu-#{version}.dmg"
+  name "Start Menu"
+  desc "Windows-style taskbar and Start menu for macOS"
+  homepage "https://github.com/region23/StartMenu"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  auto_updates false
+  depends_on macos: ">= :sonoma"
+
+  app "StartMenu.app"
+
+  zap trash: [
+    "~/Library/Preferences/app.pavlenko.startmenu.plist",
+    "~/Library/Application Support/app.pavlenko.startmenu",
+    "~/Library/Caches/app.pavlenko.startmenu",
+  ]
+end
+CASK
+
+    pushd "$TAP_CHECKOUT" >/dev/null
+    if git diff --quiet -- Casks/startmenu.rb; then
+        echo "    cask unchanged — nothing to push"
+    else
+        git add Casks/startmenu.rb
+        git -c commit.gpgsign=false commit -m "startmenu $VERSION" >/dev/null
+        git push origin HEAD >/dev/null
+        echo "    pushed startmenu $VERSION to $TAP_REPO"
+    fi
+    popd >/dev/null
+fi
+
 echo
 echo "==> Done. Released $TAG"
 echo "    $RELEASE_URL"

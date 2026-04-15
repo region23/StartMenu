@@ -10,6 +10,32 @@ footer has a gear for settings and a power icon to quit.
 
 Inspired by [boringBar](https://boringbar.app/). macOS 14+ only.
 
+## Install
+
+### Via Homebrew (recommended)
+
+```sh
+brew install --cask region23/tap/startmenu
+```
+
+That's it — Homebrew handles Gatekeeper quarantine for you and the app launches cleanly on the first try. To upgrade later:
+
+```sh
+brew upgrade --cask region23/tap/startmenu
+```
+
+### Manual install (DMG)
+
+Download the latest `StartMenu-*.dmg` from [Releases](https://github.com/region23/StartMenu/releases), mount it and drag `StartMenu.app` into `/Applications`.
+
+Because the app is ad-hoc signed (no paid Apple Developer ID, no notarization), macOS Gatekeeper will block the first launch with *"StartMenu cannot be opened because Apple cannot check it for malicious software"*. Strip the quarantine attribute once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/StartMenu.app
+```
+
+After that the app launches normally. The Homebrew path above avoids this entirely.
+
 ## Features
 
 - **Taskbar chips** for every window on the current Space. Icon + title. Active
@@ -120,16 +146,12 @@ commit count on `HEAD`. The DMG is produced with the built-in `hdiutil`
 Release artifacts land in `build/release/StartMenu-<version>.dmg` and are
 uploaded to the GitHub release as an asset.
 
-**Note on downloaded releases:** builds are ad-hoc signed and not
-notarized, so Gatekeeper will refuse to open the app on first launch.
-After mounting the DMG and copying to `/Applications`, strip the
-quarantine attribute:
-
-```sh
-xattr -cr /Applications/StartMenu.app
-```
-
-Or right-click the app → *Open* → *Open* to accept once.
+After the GitHub release is live the script also updates the Homebrew
+cask in [region23/homebrew-tap](https://github.com/region23/homebrew-tap)
+so `brew upgrade --cask region23/tap/startmenu` picks up the new
+version. The tap is cloned into `build/release/homebrew-tap`, the
+`Casks/startmenu.rb` file is rewritten with the fresh `version`, `url`
+and `sha256`, then committed and pushed.
 
 ## Dev notes
 
@@ -169,8 +191,7 @@ if you tweak the design.
 ## Roadmap
 
 - Window thumbnails on hover (`ScreenCaptureKit`)
-- Groups for multiple windows per app (stacked chip with count)
 - Spaces switcher on the right side of the bar
 - Multi-display (per-screen bar)
-- Fullscreen and Stage Manager edge cases
+- Stage Manager edge cases
 - Stable code signing identity so TCC grants persist across rebuilds
