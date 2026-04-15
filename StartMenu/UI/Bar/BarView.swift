@@ -9,13 +9,14 @@ struct BarView: View {
     let onStartButtonTap: () -> Void
 
     private var scale: Double { settingsStore.uiScale }
+    private var groups: [WindowGroup] { WindowGroup.group(windowService.windows) }
 
     var body: some View {
         HStack(spacing: 8 * scale) {
             StartButton(scale: scale, onTap: onStartButtonTap, onFrame: onStartButtonFrame)
             Divider().frame(height: 28 * scale).opacity(0.25)
             WindowChipsList(
-                groups: WindowGroup.group(windowService.windows),
+                groups: groups,
                 activePID: windowService.activeAppPID,
                 scale: scale,
                 compact: settingsStore.compactChips,
@@ -62,42 +63,51 @@ private struct WindowChipsList: View {
     let onClose: (WindowInfo) -> Void
     let onMinimize: (WindowInfo) -> Void
 
-    @State private var chipFrames: [pid_t: CGRect] = [:]
+    @State private var hoveredChipID: pid_t?
+    @State private var edgeFrames = EdgeChipFrames()
     @State private var viewportWidth: CGFloat = 0
 
     private static let coordinateSpaceName = "chipScroll"
     private static let edgeSlack: CGFloat = 1.0
+    private static let hoverAnimation = Animation.easeOut(duration: 0.14)
 
     private var canScrollLeft: Bool {
-        guard let firstID = groups.first?.id, let frame = chipFrames[firstID] else { return false }
+        guard let frame = edgeFrames.first else { return false }
         return frame.minX < -Self.edgeSlack
     }
 
     private var canScrollRight: Bool {
-        guard let lastID = groups.last?.id, let frame = chipFrames[lastID] else { return false }
+        guard let frame = edgeFrames.last else { return false }
         return frame.maxX > viewportWidth + Self.edgeSlack
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8 * scale) {
-                    ForEach(groups) { group in
+                LazyHStack(spacing: 8 * scale) {
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                         WindowChipView(
                             group: group,
                             isActive: group.id == activePID,
+                            isHovered: hoveredChipID == group.id,
                             scale: scale,
                             compact: compact
                         )
                         .id(group.id)
                         .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: ChipFramesPreferenceKey.self,
-                                    value: [group.id: geo.frame(in: .named(Self.coordinateSpaceName))]
-                                )
-                            }
+                            edgeFrameReader(for: index, total: groups.count)
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: 6))
+                        .onHover { inside in
+                            guard compact else { return }
+                            withAnimation(Self.hoverAnimation) {
+                                if inside {
+                                    hoveredChipID = group.id
+                                } else if hoveredChipID == group.id {
+                                    hoveredChipID = nil
+                                }
+                            }
+                        }
                         .onTapGesture { onTap(group.representative) }
                         .contextMenu {
                             if group.windows.count > 1 {
@@ -121,7 +131,7 @@ private struct WindowChipsList: View {
                         .onChange(of: outer.size.width) { _, new in viewportWidth = new }
                 }
             )
-            .onPreferenceChange(ChipFramesPreferenceKey.self) { chipFrames = $0 }
+            .onPreferenceChange(EdgeChipFramesPreferenceKey.self) { edgeFrames = $0 }
             .overlay(alignment: .leading) {
                 if canScrollLeft, let first = groups.first?.id {
                     ScrollChevron(direction: .left, scale: scale) {
@@ -148,12 +158,37 @@ private struct WindowChipsList: View {
             .animation(.easeOut(duration: 0.15), value: canScrollRight)
         }
     }
+
+    @ViewBuilder
+    private func edgeFrameReader(for index: Int, total: Int) -> some View {
+        if index == 0 || index == total - 1 {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: EdgeChipFramesPreferenceKey.self,
+                    value: EdgeChipFrames(
+                        first: index == 0 ? geo.frame(in: .named(Self.coordinateSpaceName)) : nil,
+                        last: index == total - 1 ? geo.frame(in: .named(Self.coordinateSpaceName)) : nil
+                    )
+                )
+            }
+        } else {
+            Color.clear
+        }
+    }
 }
 
-private struct ChipFramesPreferenceKey: PreferenceKey {
-    static var defaultValue: [pid_t: CGRect] = [:]
-    static func reduce(value: inout [pid_t: CGRect], nextValue: () -> [pid_t: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
+private struct EdgeChipFrames: Equatable {
+    var first: CGRect?
+    var last: CGRect?
+}
+
+private struct EdgeChipFramesPreferenceKey: PreferenceKey {
+    static var defaultValue = EdgeChipFrames()
+
+    static func reduce(value: inout EdgeChipFrames, nextValue: () -> EdgeChipFrames) {
+        let next = nextValue()
+        if let first = next.first { value.first = first }
+        if let last = next.last { value.last = last }
     }
 }
 
@@ -188,13 +223,19 @@ private struct ScrollChevron: View {
 private struct WindowChipView: View {
     let group: WindowGroup
     let isActive: Bool
+    let isHovered: Bool
     let scale: Double
     let compact: Bool
-    @State private var hovering = false
 
     private var representative: WindowInfo { group.representative }
     private var dimmed: Bool { group.isAllMinimized }
-    private var showLabel: Bool { !compact || hovering }
+    private var showLabel: Bool { !compact || isHovered }
+    private var labelWidth: CGFloat {
+        guard showLabel else { return 0 }
+        let font = NSFont.systemFont(ofSize: 12 * scale)
+        let raw = (representative.displayTitle as NSString).size(withAttributes: [.font: font]).width
+        return min(170 * scale, ceil(raw))
+    }
 
     var body: some View {
         HStack(spacing: 6 * scale) {
@@ -205,20 +246,14 @@ private struct WindowChipView: View {
                     .frame(width: 20 * scale, height: 20 * scale)
                     .opacity(dimmed ? 0.55 : 1.0)
             }
-            if showLabel {
-                Text(representative.displayTitle)
-                    .font(.system(size: 12 * scale))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: 170 * scale, alignment: .leading)
-                    .opacity(dimmed ? 0.6 : 1.0)
-                    .italic(dimmed)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .leading)),
-                        removal: .opacity.combined(with: .move(edge: .leading))
-                    ))
-            }
+            Text(representative.displayTitle)
+                .font(.system(size: 12 * scale))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: labelWidth, alignment: .leading)
+                .opacity(showLabel ? (dimmed ? 0.6 : 1.0) : 0)
+                .italic(dimmed)
+                .clipped()
             if group.count > 1 {
                 Text("\(group.count)")
                     .font(.system(size: 11 * scale, weight: .semibold))
@@ -252,14 +287,12 @@ private struct WindowChipView: View {
                     .offset(y: 4 * scale)
             }
         }
-        .animation(.easeOut(duration: 0.18), value: showLabel)
-        .onHover { hovering = $0 }
-        .help(representative.displayTitle)
+        .animation(.easeOut(duration: 0.14), value: showLabel)
     }
 
     private var background: Color {
         if isActive { return Color.white.opacity(0.22) }
-        if hovering { return Color.white.opacity(0.18) }
+        if isHovered { return Color.white.opacity(0.18) }
         return Color.white.opacity(0.08)
     }
 }

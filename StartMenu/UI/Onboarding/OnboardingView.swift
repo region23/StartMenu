@@ -85,6 +85,10 @@ private struct PermissionRow: View {
     }
 }
 
-#Preview {
-    OnboardingView(permissionsService: PermissionsService(), onDismiss: {})
+#if DEBUG
+struct OnboardingView_Previews: PreviewProvider {
+    static var previews: some View {
+        OnboardingView(permissionsService: PermissionsService(), onDismiss: {})
+    }
 }
+#endif

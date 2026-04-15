@@ -7,6 +7,8 @@ import os.log
 
 @MainActor
 final class WindowService: ObservableObject {
+    private static let refreshInterval: TimeInterval = 0.2
+
     @Published private(set) var windows: [WindowInfo] = []
     @Published private(set) var activeAppPID: pid_t?
 
@@ -63,21 +65,27 @@ final class WindowService: ObservableObject {
         }
         workspaceObservers.append(token)
 
-        // Switching into or out of a fullscreen-app Space should hide or
-        // reveal the bar immediately, not on the next 0.5s tick.
-        let spaceToken = center.addObserver(
-            forName: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        for name in [
+            NSWorkspace.activeSpaceDidChangeNotification,
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didUnhideApplicationNotification
+        ] {
+            let token = center.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            }
+            workspaceObservers.append(token)
         }
-        workspaceObservers.append(spaceToken)
     }
 
     func start() {
         timer?.invalidate()
-        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -156,6 +164,8 @@ final class WindowService: ObservableObject {
     // MARK: - Clamp windows to stay above the bar
 
     private static let axFullScreenAttribute = "AXFullScreen" as CFString
+    private static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
+    private static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
     private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
     private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
     private static let log = OSLog(subsystem: "app.pavlenko.startmenu", category: "clamp")
@@ -183,20 +193,7 @@ final class WindowService: ObservableObject {
             if pid == ours { continue }
 
             let appElement = AXUIElementCreateApplication(pid)
-
-            var windowsRef: CFTypeRef?
-            var listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-
-            // Chromium/Electron apps keep their AX tree dormant. Flip
-            // both known "wake up" attributes and retry once.
-            if listErr == .apiDisabled || listErr == .cannotComplete {
-                AXUIElementSetAttributeValue(appElement, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
-                AXUIElementSetAttributeValue(appElement, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
-                listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-            }
-
-            guard listErr == .success, let ref = windowsRef else { continue }
-            let axWindows = ref as! [AXUIElement]
+            let axWindows = copyAXWindows(for: appElement)
             if axWindows.isEmpty { continue }
 
             for ax in axWindows {
@@ -236,14 +233,25 @@ final class WindowService: ObservableObject {
                 let newHeight = min(size.height, maxHeight)
                 if newHeight < 80 || usableHeight < 80 { continue }
 
-                if abs(newY - position.y) > 0.5 {
-                    setAXPosition(ax, point: CGPoint(x: position.x, y: newY))
-                }
-                if abs(newHeight - size.height) > 0.5 {
-                    setAXSize(ax, size: CGSize(width: size.width, height: newHeight))
-                }
-                os_log("clamp pid=%{public}d oldY=%{public}.0f oldH=%{public}.0f -> newY=%{public}.0f newH=%{public}.0f",
-                       log: Self.log, type: .info, pid, position.y, size.height, newY, newHeight)
+                let clamped = applyClamp(
+                    ax,
+                    from: position,
+                    size: size,
+                    targetY: newY,
+                    targetHeight: newHeight
+                )
+                let logType: OSLogType = clamped ? .info : .error
+                os_log(
+                    "clamp pid=%{public}d oldY=%{public}.0f oldH=%{public}.0f -> newY=%{public}.0f newH=%{public}.0f ok=%{public}s",
+                    log: Self.log,
+                    type: logType,
+                    pid,
+                    position.y,
+                    size.height,
+                    newY,
+                    newHeight,
+                    clamped ? "yes" : "no"
+                )
             }
         }
     }
@@ -311,16 +319,104 @@ final class WindowService: ObservableObject {
         return size
     }
 
-    private func setAXSize(_ element: AXUIElement, size: CGSize) {
+    @discardableResult
+    private func setAXSize(_ element: AXUIElement, size: CGSize) -> AXError {
         var s = size
-        guard let value = AXValueCreate(.cgSize, &s) else { return }
-        AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
+        guard let value = AXValueCreate(.cgSize, &s) else { return .failure }
+        return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
     }
 
-    private func setAXPosition(_ element: AXUIElement, point: CGPoint) {
+    @discardableResult
+    private func setAXPosition(_ element: AXUIElement, point: CGPoint) -> AXError {
         var p = point
-        guard let value = AXValueCreate(.cgPoint, &p) else { return }
-        AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
+        guard let value = AXValueCreate(.cgPoint, &p) else { return .failure }
+        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
+    }
+
+    private func copyAXWindows(for appElement: AXUIElement) -> [AXUIElement] {
+        var windowsRef: CFTypeRef?
+        var listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+        // Chromium/Electron apps often keep their AX tree asleep until
+        // another client explicitly opts them into manual AX access.
+        if listErr == .apiDisabled || listErr == .cannotComplete || listErr == .attributeUnsupported {
+            wakeAccessibilityTree(for: appElement)
+            windowsRef = nil
+            listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+        }
+
+        if listErr == .success, let ref = windowsRef as? [AXUIElement], !ref.isEmpty {
+            return ref
+        }
+
+        var fallback: [AXUIElement] = []
+        if let focused = copyAXWindow(appElement, attribute: Self.axFocusedWindowAttribute) {
+            fallback.append(focused)
+        }
+        if let main = copyAXWindow(appElement, attribute: Self.axMainWindowAttribute),
+           !fallback.contains(where: { CFEqual($0, main) }) {
+            fallback.append(main)
+        }
+        return fallback
+    }
+
+    private func wakeAccessibilityTree(for appElement: AXUIElement) {
+        AXUIElementSetAttributeValue(appElement, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(appElement, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
+    }
+
+    private func copyAXWindow(_ appElement: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, attribute, &valueRef) == .success,
+              let window = valueRef else { return nil }
+        return (window as! AXUIElement)
+    }
+
+    private func applyClamp(
+        _ ax: AXUIElement,
+        from position: CGPoint,
+        size: CGSize,
+        targetY: CGFloat,
+        targetHeight: CGFloat
+    ) -> Bool {
+        let targetPoint = CGPoint(x: position.x, y: targetY)
+        let targetSize = CGSize(width: size.width, height: targetHeight)
+        let needsMove = abs(targetY - position.y) > 0.5
+        let needsResize = abs(targetHeight - size.height) > 0.5
+
+        let attempts: [[(AXUIElement) -> AXError]] = {
+            switch (needsMove, needsResize) {
+            case (true, true):
+                return [
+                    [{ self.setAXSize($0, size: targetSize) }, { self.setAXPosition($0, point: targetPoint) }],
+                    [{ self.setAXPosition($0, point: targetPoint) }, { self.setAXSize($0, size: targetSize) }]
+                ]
+            case (true, false):
+                return [[{ self.setAXPosition($0, point: targetPoint) }]]
+            case (false, true):
+                return [[{ self.setAXSize($0, size: targetSize) }]]
+            case (false, false):
+                return []
+            }
+        }()
+
+        for operations in attempts {
+            var operationFailed = false
+            for operation in operations {
+                let err = operation(ax)
+                if err != .success { operationFailed = true }
+            }
+
+            guard !operationFailed else { continue }
+
+            let currentY = axPoint(ax, attribute: kAXPositionAttribute as CFString)?.y ?? position.y
+            let currentHeight = axSize(ax, attribute: kAXSizeAttribute as CFString)?.height ?? size.height
+            if abs(currentY - targetY) <= 1.0, abs(currentHeight - targetHeight) <= 1.0 {
+                return true
+            }
+        }
+
+        return attempts.isEmpty
     }
 
     // MARK: - Onscreen
