@@ -27,7 +27,8 @@ fi
 
 TAG="v$VERSION"
 BUNDLE_ID="app.pavlenko.startmenu"
-STABLE_REQUIREMENT="designated => identifier \"$BUNDLE_ID\""
+STABLE_REQUIREMENT_BODY="identifier \"$BUNDLE_ID\""
+STABLE_REQUIREMENT="designated => $STABLE_REQUIREMENT_BODY"
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" != "main" ]; then
@@ -113,8 +114,8 @@ codesign \
     "$BUILT_APP"
 
 ACTUAL_REQUIREMENT=$(codesign -d -r- "$BUILT_APP" 2>&1 | awk -F'=> ' '/designated =>/ {print $2}')
-if [ "$ACTUAL_REQUIREMENT" != "$STABLE_REQUIREMENT" ]; then
-    echo "error: expected designated requirement '$STABLE_REQUIREMENT' but got '$ACTUAL_REQUIREMENT'" >&2
+if [ "$ACTUAL_REQUIREMENT" != "$STABLE_REQUIREMENT_BODY" ]; then
+    echo "error: expected designated requirement '$STABLE_REQUIREMENT_BODY' but got '$ACTUAL_REQUIREMENT'" >&2
     exit 1
 fi
 
