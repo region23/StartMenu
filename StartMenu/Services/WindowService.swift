@@ -58,9 +58,21 @@ final class WindowService: ObservableObject {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             Task { @MainActor in
                 self?.activeAppPID = app?.processIdentifier
+                self?.refresh()
             }
         }
         workspaceObservers.append(token)
+
+        // Switching into or out of a fullscreen-app Space should hide or
+        // reveal the bar immediately, not on the next 0.5s tick.
+        let spaceToken = center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        workspaceObservers.append(spaceToken)
     }
 
     func start() {
@@ -90,6 +102,7 @@ final class WindowService: ObservableObject {
 
         if sorted != windows { windows = sorted }
 
+        updateBarVisibility()
         clampWindowsAboveBar()
     }
 
@@ -147,13 +160,13 @@ final class WindowService: ObservableObject {
     private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
     private static let log = OSLog(subsystem: "app.pavlenko.startmenu", category: "clamp")
 
-    /// PIDs we've recently kicked out of fullscreen via keystroke — used to
-    /// avoid spamming the shortcut every half-second.
-    private var lastFullscreenKick: [pid_t: Date] = [:]
-
     private func clampWindowsAboveBar() {
         guard let bar = barWindow,
               let screen = bar.screen ?? NSScreen.main else { return }
+
+        // If any app is in native fullscreen on this screen, updateBarVisibility
+        // has already ordered the bar out of the way. Nothing to clamp.
+        if isAnyAppInNativeFullscreen(on: screen) { return }
 
         let screenHeight = screen.frame.height
         let visible = screen.visibleFrame
@@ -168,7 +181,6 @@ final class WindowService: ObservableObject {
             guard app.activationPolicy == .regular else { continue }
             let pid = app.processIdentifier
             if pid == ours { continue }
-            let name = app.localizedName ?? "?"
 
             let appElement = AXUIElementCreateApplication(pid)
 
@@ -183,12 +195,7 @@ final class WindowService: ObservableObject {
                 listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
             }
 
-            guard listErr == .success, let ref = windowsRef else {
-                // AX refused us. Fall back to CGWindowList + keystroke
-                // injection if the app has a window under our bar.
-                forceExitFullscreenIfNeeded(pid: pid, name: name, barTopQuartz: barTopQuartz)
-                continue
-            }
+            guard listErr == .success, let ref = windowsRef else { continue }
             let axWindows = ref as! [AXUIElement]
             if axWindows.isEmpty { continue }
 
@@ -204,9 +211,12 @@ final class WindowService: ObservableObject {
                 AXUIElementCopyAttributeValue(ax, kAXSubroleAttribute as CFString, &subroleRef)
                 let subrole = (subroleRef as? String) ?? "?"
 
+                // Native fullscreen windows live in their own Space and
+                // aren't ours to resize — the bar auto-hides while a
+                // fullscreen app is frontmost, so skip silently.
                 var fsRef: CFTypeRef?
-                let fsReadErr = AXUIElementCopyAttributeValue(ax, Self.axFullScreenAttribute, &fsRef)
-                let isFullscreen = (fsReadErr == .success) && ((fsRef as? Bool) == true)
+                if AXUIElementCopyAttributeValue(ax, Self.axFullScreenAttribute, &fsRef) == .success,
+                   (fsRef as? Bool) == true { continue }
 
                 let position = axPoint(ax, attribute: kAXPositionAttribute as CFString) ?? .zero
                 let size = axSize(ax, attribute: kAXSizeAttribute as CFString) ?? .zero
@@ -215,13 +225,6 @@ final class WindowService: ObservableObject {
                 // Desktop (role=AXScrollArea), palettes, tooltips, etc.
                 if role != kAXWindowRole as String { continue }
                 if subrole != kAXStandardWindowSubrole as String { continue }
-
-                if isFullscreen {
-                    let setErr = AXUIElementSetAttributeValue(ax, Self.axFullScreenAttribute, kCFBooleanFalse)
-                    os_log("exit-fullscreen pid=%{public}d name=%{public}@ setErr=%{public}d",
-                           log: Self.log, type: .info, pid, name, setErr.rawValue)
-                    continue
-                }
 
                 let windowBottom = position.y + size.height
                 let extendsPastBar = windowBottom > barTopQuartz + 0.5
@@ -239,9 +242,54 @@ final class WindowService: ObservableObject {
                 if abs(newHeight - size.height) > 0.5 {
                     setAXSize(ax, size: CGSize(width: size.width, height: newHeight))
                 }
-                os_log("clamp pid=%{public}d name=%{public}@ oldY=%{public}.0f oldH=%{public}.0f -> newY=%{public}.0f newH=%{public}.0f",
-                       log: Self.log, type: .info, pid, name, position.y, size.height, newY, newHeight)
+                os_log("clamp pid=%{public}d oldY=%{public}.0f oldH=%{public}.0f -> newY=%{public}.0f newH=%{public}.0f",
+                       log: Self.log, type: .info, pid, position.y, size.height, newY, newHeight)
             }
+        }
+    }
+
+    // MARK: - Native fullscreen detection
+
+    /// Returns true iff CGWindowList shows any non-StartMenu window on
+    /// the given screen whose layer is 0 and whose bounds exactly cover
+    /// the full screen frame (origin 0,0 + size = screen.frame.size).
+    /// That's the native fullscreen signature — zoomed/maximised
+    /// windows still leave the menu bar visible and therefore have a
+    /// positive top-Y offset.
+    private func isAnyAppInNativeFullscreen(on screen: NSScreen) -> Bool {
+        let ours = ProcessInfo.processInfo.processIdentifier
+        let screenSize = screen.frame.size
+        guard let raw = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else { return false }
+
+        for entry in raw {
+            guard let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != ours else { continue }
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+            guard let dict = entry[kCGWindowBounds as String] as? NSDictionary else { continue }
+            var bounds = CGRect.zero
+            CGRectMakeWithDictionaryRepresentation(dict as CFDictionary, &bounds)
+            if abs(bounds.origin.x) < 0.5,
+               abs(bounds.origin.y) < 0.5,
+               abs(bounds.size.width - screenSize.width) < 0.5,
+               abs(bounds.size.height - screenSize.height) < 0.5 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func updateBarVisibility() {
+        guard let bar = barWindow else { return }
+        let screen = bar.screen ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return }
+
+        let shouldHide = isAnyAppInNativeFullscreen(on: screen)
+        if shouldHide, bar.isVisible {
+            bar.orderOut(nil)
+        } else if !shouldHide, !bar.isVisible {
+            bar.orderFrontRegardless()
         }
     }
 
@@ -273,60 +321,6 @@ final class WindowService: ObservableObject {
         var p = point
         guard let value = AXValueCreate(.cgPoint, &p) else { return }
         AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
-    }
-
-    // MARK: - Keystroke fallback (for apps that refuse AX, e.g. Claude)
-
-    private func forceExitFullscreenIfNeeded(pid: pid_t, name: String, barTopQuartz: CGFloat) {
-        guard let raw = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else { return }
-
-        var hasOverlap = false
-        for entry in raw {
-            guard let wpid = entry[kCGWindowOwnerPID as String] as? pid_t, wpid == pid else { continue }
-            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-            guard let dict = entry[kCGWindowBounds as String] as? NSDictionary else { continue }
-            var bounds = CGRect.zero
-            CGRectMakeWithDictionaryRepresentation(dict as CFDictionary, &bounds)
-            if bounds.width < 60 || bounds.height < 40 { continue }
-            // CGWindowBounds are already in Quartz (top-left origin).
-            if bounds.maxY > barTopQuartz + 0.5 {
-                hasOverlap = true
-                break
-            }
-        }
-
-        guard hasOverlap else { return }
-
-        // Only kick the frontmost app — otherwise we'd steal the
-        // keystroke from whatever the user is actually typing into.
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard frontPID == pid else {
-            os_log("skip-kick pid=%{public}d name=%{public}@ reason=not-frontmost front=%{public}d",
-                   log: Self.log, type: .info, pid, name, frontPID ?? -1)
-            return
-        }
-
-        if let last = lastFullscreenKick[pid], Date().timeIntervalSince(last) < 3.0 { return }
-        lastFullscreenKick[pid] = Date()
-
-        sendCtrlCmdF()
-        os_log("force-exit-fullscreen via Ctrl+Cmd+F pid=%{public}d name=%{public}@",
-               log: Self.log, type: .info, pid, name)
-    }
-
-    private func sendCtrlCmdF() {
-        let source = CGEventSource(stateID: .combinedSessionState)
-        let fKey: CGKeyCode = 0x03 // kVK_ANSI_F
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: fKey, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: fKey, keyDown: false) else { return }
-        let flags: CGEventFlags = [.maskCommand, .maskControl]
-        down.flags = flags
-        up.flags = flags
-        down.post(tap: .cgSessionEventTap)
-        up.post(tap: .cgSessionEventTap)
     }
 
     // MARK: - Onscreen
