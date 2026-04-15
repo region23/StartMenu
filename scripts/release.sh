@@ -26,6 +26,8 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
 fi
 
 TAG="v$VERSION"
+BUNDLE_ID="app.pavlenko.startmenu"
+STABLE_REQUIREMENT="designated => identifier \"$BUNDLE_ID\""
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" != "main" ]; then
@@ -99,6 +101,20 @@ fi
 BUILT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$BUILT_APP/Contents/Info.plist" 2>/dev/null || echo "?")
 if [ "$BUILT_VERSION" != "$VERSION" ]; then
     echo "error: built CFBundleShortVersionString '$BUILT_VERSION' does not match requested '$VERSION'" >&2
+    exit 1
+fi
+
+echo "==> Re-signing app with stable designated requirement"
+codesign \
+    --force \
+    --sign - \
+    --entitlements StartMenu/Resources/StartMenu.entitlements \
+    --requirements "=$STABLE_REQUIREMENT" \
+    "$BUILT_APP"
+
+ACTUAL_REQUIREMENT=$(codesign -d -r- "$BUILT_APP" 2>&1 | awk -F'=> ' '/designated =>/ {print $2}')
+if [ "$ACTUAL_REQUIREMENT" != "$STABLE_REQUIREMENT" ]; then
+    echo "error: expected designated requirement '$STABLE_REQUIREMENT' but got '$ACTUAL_REQUIREMENT'" >&2
     exit 1
 fi
 

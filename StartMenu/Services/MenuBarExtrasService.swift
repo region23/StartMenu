@@ -13,6 +13,7 @@ final class MenuBarExtrasService: ObservableObject {
     private let log = Logger(subsystem: "app.pavlenko.startmenu", category: "menuextras")
 
     private static let refreshInterval: TimeInterval = 3.0
+    private static let minimumVisibleItemSize = CGSize(width: 8, height: 8)
 
     init() {
         refresh()
@@ -73,6 +74,8 @@ final class MenuBarExtrasService: ObservableObject {
                 let frame = CGRect(origin: position, size: size)
 
                 let actions = copyActions(child)
+                let canPress = actions.contains(kAXPressAction as String)
+                let canShowMenu = actions.contains(kAXShowMenuAction as String)
                 let item = MenuBarExtraInfo(
                     id: makeID(pid: pid, index: index, label: label, frame: frame),
                     ownerPID: pid,
@@ -81,13 +84,19 @@ final class MenuBarExtrasService: ObservableObject {
                     title: title,
                     description: description.isEmpty ? help : description,
                     frame: frame,
-                    canPress: actions.contains(kAXPressAction as String),
-                    canShowMenu: actions.contains(kAXShowMenuAction as String)
+                    canPress: canPress,
+                    canShowMenu: canShowMenu
                 )
+
+                guard shouldInclude(item) else { continue }
                 resolved.append(item)
                 elements[item.id] = child
             }
         }
+
+        let deduped = deduplicate(resolved, elements: elements)
+        resolved = deduped.items
+        elements = deduped.elements
 
         resolved.sort { lhs, rhs in
             if abs(lhs.frame.minX - rhs.frame.minX) > 0.5 {
@@ -182,5 +191,100 @@ final class MenuBarExtrasService: ObservableObject {
 
     private func makeID(pid: pid_t, index: Int, label: String, frame: CGRect) -> String {
         "\(pid):\(index):\(label):\(Int(frame.minX.rounded())):\(Int(frame.width.rounded()))"
+    }
+
+    private func shouldInclude(_ item: MenuBarExtraInfo) -> Bool {
+        guard item.canPress || item.canShowMenu else { return false }
+        guard item.frame.width >= Self.minimumVisibleItemSize.width,
+              item.frame.height >= Self.minimumVisibleItemSize.height else { return false }
+        guard item.frame.minX > 0, item.frame.minY > 0 else { return false }
+
+        let label = normalized(item.displayTitle)
+        if label.isEmpty { return false }
+
+        // Control Center exposes a bunch of internal AX children that are
+        // not distinct visible status items. We keep the genuinely visible
+        // actionable entries and collapse repeated generic "Control Center"
+        // rows later.
+        if label == "control center" || label == "пункт управления" {
+            return true
+        }
+
+        return true
+    }
+
+    private func deduplicate(
+        _ items: [MenuBarExtraInfo],
+        elements: [String: AXUIElement]
+    ) -> (items: [MenuBarExtraInfo], elements: [String: AXUIElement]) {
+        var kept: [MenuBarExtraInfo] = []
+        var keptElements: [String: AXUIElement] = [:]
+
+        for item in items {
+            if let duplicateIndex = kept.firstIndex(where: { isDuplicate(item, $0) }) {
+                let existing = kept[duplicateIndex]
+                let preferred = preferredItem(between: existing, and: item)
+                kept[duplicateIndex] = preferred
+                if let element = elements[preferred.id] {
+                    keptElements[preferred.id] = element
+                }
+                if preferred.id != existing.id {
+                    keptElements.removeValue(forKey: existing.id)
+                }
+                continue
+            }
+
+            kept.append(item)
+            if let element = elements[item.id] {
+                keptElements[item.id] = element
+            }
+        }
+
+        return (kept, keptElements)
+    }
+
+    private func isDuplicate(_ lhs: MenuBarExtraInfo, _ rhs: MenuBarExtraInfo) -> Bool {
+        guard lhs.ownerPID == rhs.ownerPID else { return false }
+
+        let lhsLabel = normalized(lhs.displayTitle)
+        let rhsLabel = normalized(rhs.displayTitle)
+        guard !lhsLabel.isEmpty, lhsLabel == rhsLabel else { return false }
+
+        // Generic duplicated rows from Control Center and similar system
+        // hosts are not useful to show multiple times.
+        if lhsLabel == "control center" || lhsLabel == "пункт управления" {
+            return true
+        }
+
+        let horizontalDistance = abs(lhs.frame.midX - rhs.frame.midX)
+        let widthReference = max(lhs.frame.width, rhs.frame.width, 1)
+        return horizontalDistance < max(18, widthReference * 0.5)
+    }
+
+    private func preferredItem(
+        between lhs: MenuBarExtraInfo,
+        and rhs: MenuBarExtraInfo
+    ) -> MenuBarExtraInfo {
+        let lhsScore = score(lhs)
+        let rhsScore = score(rhs)
+        if lhsScore == rhsScore {
+            return lhs.frame.minX >= rhs.frame.minX ? lhs : rhs
+        }
+        return lhsScore > rhsScore ? lhs : rhs
+    }
+
+    private func score(_ item: MenuBarExtraInfo) -> CGFloat {
+        var score = item.frame.width * item.frame.height
+        if item.canPress { score += 20 }
+        if item.canShowMenu { score += 20 }
+        if !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 10 }
+        if !item.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 5 }
+        return score
+    }
+
+    private func normalized(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 }

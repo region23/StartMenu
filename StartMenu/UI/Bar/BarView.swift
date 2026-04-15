@@ -106,6 +106,8 @@ private struct WindowChipsList: View {
     let onMinimize: (WindowInfo) -> Void
 
     @State private var hoveredChipID: pid_t?
+    @State private var popoverGroupID: pid_t?
+    @State private var hoveredPopoverGroupID: pid_t?
     @State private var edgeFrames = EdgeChipFrames()
     @State private var viewportWidth: CGFloat = 0
     @State private var pendingHoverClear: DispatchWorkItem?
@@ -113,6 +115,7 @@ private struct WindowChipsList: View {
     private static let coordinateSpaceName = "chipScroll"
     private static let edgeSlack: CGFloat = 1.0
     private static let hoverAnimation = Animation.easeOut(duration: 0.14)
+    private static let popoverDismissDelay: TimeInterval = 0.22
 
     private var canScrollLeft: Bool {
         guard let frame = edgeFrames.first else { return false }
@@ -142,7 +145,7 @@ private struct WindowChipsList: View {
                         )
                         .contentShape(RoundedRectangle(cornerRadius: 6))
                         .onHover { inside in
-                            handleHoverChange(inside, for: group.id)
+                            handleChipHoverChange(inside, for: group)
                         }
                         .onTapGesture { onTap(group.representative) }
                         .contextMenu {
@@ -164,9 +167,9 @@ private struct WindowChipsList: View {
                                 GroupWindowPicker(
                                     group: group,
                                     scale: scale,
-                                    onHoverChange: { inside in handleHoverChange(inside, for: group.id) },
+                                    onHoverChange: { inside in handlePopoverHoverChange(inside, for: group.id) },
                                     onActivate: { window in
-                                        hoveredChipID = nil
+                                        clearHoverState()
                                         onTap(window)
                                     }
                                 )
@@ -229,35 +232,83 @@ private struct WindowChipsList: View {
         }
     }
 
-    private func handleHoverChange(_ inside: Bool, for groupID: pid_t) {
+    private func handleChipHoverChange(_ inside: Bool, for group: WindowGroup) {
         pendingHoverClear?.cancel()
         pendingHoverClear = nil
 
         if inside {
             withAnimation(Self.hoverAnimation) {
-                hoveredChipID = groupID
+                hoveredChipID = group.id
+                if group.count > 1 {
+                    popoverGroupID = group.id
+                }
             }
             return
         }
 
-        let work = DispatchWorkItem {
-            guard hoveredChipID == groupID else { return }
+        if hoveredChipID == group.id {
+            hoveredChipID = nil
+        }
+        scheduleHoverClear(for: group.id)
+    }
+
+    private func handlePopoverHoverChange(_ inside: Bool, for groupID: pid_t) {
+        pendingHoverClear?.cancel()
+        pendingHoverClear = nil
+
+        if inside {
             withAnimation(Self.hoverAnimation) {
-                hoveredChipID = nil
+                hoveredPopoverGroupID = groupID
+                hoveredChipID = groupID
+                popoverGroupID = groupID
+            }
+            return
+        }
+
+        if hoveredPopoverGroupID == groupID {
+            hoveredPopoverGroupID = nil
+        }
+        scheduleHoverClear(for: groupID)
+    }
+
+    private func scheduleHoverClear(for groupID: pid_t) {
+        let work = DispatchWorkItem {
+            guard hoveredChipID != groupID else { return }
+            guard hoveredPopoverGroupID != groupID else { return }
+            withAnimation(Self.hoverAnimation) {
+                if popoverGroupID == groupID {
+                    popoverGroupID = nil
+                }
             }
         }
         pendingHoverClear = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.popoverDismissDelay, execute: work)
+    }
+
+    private func clearHoverState() {
+        pendingHoverClear?.cancel()
+        pendingHoverClear = nil
+        hoveredChipID = nil
+        hoveredPopoverGroupID = nil
+        popoverGroupID = nil
     }
 
     private func hoverPopoverBinding(for group: WindowGroup) -> Binding<Bool> {
         Binding(
-            get: { group.count > 1 && hoveredChipID == group.id },
+            get: { group.count > 1 && popoverGroupID == group.id },
             set: { presented in
                 if presented {
-                    handleHoverChange(true, for: group.id)
+                    withAnimation(Self.hoverAnimation) {
+                        popoverGroupID = group.id
+                    }
                 } else {
-                    handleHoverChange(false, for: group.id)
+                    if hoveredChipID == group.id {
+                        hoveredChipID = nil
+                    }
+                    if hoveredPopoverGroupID == group.id {
+                        hoveredPopoverGroupID = nil
+                    }
+                    scheduleHoverClear(for: group.id)
                 }
             }
         )
@@ -398,42 +449,11 @@ private struct GroupWindowPicker: View {
                 .textCase(.uppercase)
 
             ForEach(group.windows) { window in
-                Button {
-                    onActivate(window)
-                } label: {
-                    HStack(spacing: 8 * scale) {
-                        if let icon = AppIconService.shared.icon(forPID: window.ownerPID) {
-                            Image(nsImage: icon)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: 18 * scale, height: 18 * scale)
-                                .opacity(window.isMinimized ? 0.6 : 1)
-                        }
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(window.displayTitle)
-                                .font(.system(size: 12 * scale, weight: .medium))
-                                .lineLimit(1)
-                            if let subtitle = window.subtitle, !subtitle.isEmpty {
-                                Text(window.isMinimized ? "\(subtitle) • Minimized" : subtitle)
-                                    .font(.system(size: 10 * scale))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            } else if window.isMinimized {
-                                Text("Minimized")
-                                    .font(.system(size: 10 * scale))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 10 * scale)
-                    .padding(.vertical, 7 * scale)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                GroupWindowPickerRow(
+                    window: window,
+                    scale: scale,
+                    onActivate: { onActivate(window) }
+                )
             }
         }
         .padding(12 * scale)
@@ -448,6 +468,61 @@ private struct GroupWindowPicker: View {
                 .stroke(Color.white.opacity(0.08))
         )
         .onHover(perform: onHoverChange)
+    }
+}
+
+private struct GroupWindowPickerRow: View {
+    let window: WindowInfo
+    let scale: Double
+    let onActivate: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onActivate) {
+            HStack(spacing: 8 * scale) {
+                if let icon = AppIconService.shared.icon(forPID: window.ownerPID) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 18 * scale, height: 18 * scale)
+                        .opacity(window.isMinimized ? 0.6 : 1)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(window.displayTitle)
+                        .font(.system(size: 12 * scale, weight: .medium))
+                        .lineLimit(1)
+                    if let subtitle = window.subtitle, !subtitle.isEmpty {
+                        Text(window.isMinimized ? "\(subtitle) • Minimized" : subtitle)
+                            .font(.system(size: 10 * scale))
+                            .foregroundStyle(isHovered ? Color.white.opacity(0.88) : .secondary)
+                            .lineLimit(1)
+                    } else if window.isMinimized {
+                        Text("Minimized")
+                            .font(.system(size: 10 * scale))
+                            .foregroundStyle(isHovered ? Color.white.opacity(0.88) : .secondary)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10 * scale)
+            .padding(.vertical, 7 * scale)
+            .background(rowBackground, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isHovered ? Color.white.opacity(0.2) : Color.clear, lineWidth: 0.5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .animation(.easeOut(duration: 0.12), value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+
+    private var rowBackground: Color {
+        isHovered ? Color.accentColor.opacity(0.34) : Color.white.opacity(0.06)
     }
 }
 
