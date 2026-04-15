@@ -6,6 +6,7 @@ struct StartMenuView: View {
     @ObservedObject var dockAppsService: DockAppsService
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var autostartService: AutostartService
+    let presentationID: UUID
     let onLaunch: (AppInfo) -> Void
     let onDismiss: () -> Void
     let onQuit: () -> Void
@@ -67,11 +68,16 @@ struct StartMenuView: View {
             ).stroke(Color.white.opacity(0.08))
         )
         .onAppear {
-            mode = .home
-            query = ""
-            DispatchQueue.main.async { searchFocused = true }
+            resetPresentationState()
         }
+        .onChange(of: presentationID) { _, _ in resetPresentationState() }
         .onExitCommand { onDismiss() }
+    }
+
+    private func resetPresentationState() {
+        mode = .home
+        query = ""
+        DispatchQueue.main.async { searchFocused = true }
     }
 
     // MARK: - Search field

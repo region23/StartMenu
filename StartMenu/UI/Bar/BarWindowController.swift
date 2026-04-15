@@ -6,6 +6,7 @@ import SwiftUI
 final class BarWindowController {
     private let panel: NSPanel
     private let windowService: WindowService
+    private let menuBarExtrasService: MenuBarExtrasService
     private let windowController: WindowController
     private let settingsStore: SettingsStore
     private let onStartTapped: (NSRect) -> Void
@@ -17,11 +18,13 @@ final class BarWindowController {
 
     init(
         windowService: WindowService,
+        menuBarExtrasService: MenuBarExtrasService,
         windowController: WindowController,
         settingsStore: SettingsStore,
         onStartTapped: @escaping (NSRect) -> Void
     ) {
         self.windowService = windowService
+        self.menuBarExtrasService = menuBarExtrasService
         self.windowController = windowController
         self.settingsStore = settingsStore
         self.onStartTapped = onStartTapped
@@ -46,6 +49,7 @@ final class BarWindowController {
 
         let view = BarView(
             windowService: windowService,
+            menuBarExtrasService: menuBarExtrasService,
             settingsStore: settingsStore,
             windowController: windowController,
             onStartButtonFrame: { [weak self] in self?.lastStartFrame = $0 },

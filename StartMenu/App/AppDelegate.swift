@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let bar = BarWindowController(
             windowService: environment.windowService,
+            menuBarExtrasService: environment.menuBarExtrasService,
             windowController: environment.windowController,
             settingsStore: environment.settingsStore,
             onStartTapped: { [weak self] frame in

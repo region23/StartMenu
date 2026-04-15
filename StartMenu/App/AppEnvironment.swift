@@ -4,6 +4,7 @@ import Foundation
 final class AppEnvironment: ObservableObject {
     let windowService: WindowService
     let windowController: WindowController
+    let menuBarExtrasService: MenuBarExtrasService
     let startMenuService: StartMenuService
     let dockAppsService: DockAppsService
     let settingsStore: SettingsStore
@@ -14,6 +15,7 @@ final class AppEnvironment: ObservableObject {
     init() {
         self.windowService = WindowService()
         self.windowController = WindowController()
+        self.menuBarExtrasService = MenuBarExtrasService()
         self.startMenuService = StartMenuService()
         self.dockAppsService = DockAppsService()
         self.settingsStore = .shared

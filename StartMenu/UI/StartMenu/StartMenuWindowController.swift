@@ -12,6 +12,8 @@ final class StartMenuWindowController {
     private var cancellables: Set<AnyCancellable> = []
     private var lastAnchorFrame: NSRect = .zero
     private weak var ignoreClicksInWindow: NSWindow?
+    private let makeRootView: (UUID) -> StartMenuView
+    private var presentationID = UUID()
 
     /// Tells the dismiss-on-outside-click logic to leave clicks in this window alone
     /// (used for the bar: the Start button there handles toggling on its own).
@@ -48,19 +50,22 @@ final class StartMenuWindowController {
         panel.worksWhenModal = true
 
         let controllerRef = ControllerRef()
-        let view = StartMenuView(
-            startMenuService: startMenuService,
-            dockAppsService: dockAppsService,
-            settingsStore: settingsStore,
-            autostartService: autostartService,
-            onLaunch: { app in
-                onLaunch(app)
-                controllerRef.value?.hide()
-            },
-            onDismiss: { controllerRef.value?.hide() },
-            onQuit: onQuit
-        )
-        hosting = NSHostingView(rootView: view)
+        makeRootView = { presentationID in
+            StartMenuView(
+                startMenuService: startMenuService,
+                dockAppsService: dockAppsService,
+                settingsStore: settingsStore,
+                autostartService: autostartService,
+                presentationID: presentationID,
+                onLaunch: { app in
+                    onLaunch(app)
+                    controllerRef.value?.hide()
+                },
+                onDismiss: { controllerRef.value?.hide() },
+                onQuit: onQuit
+            )
+        }
+        hosting = NSHostingView(rootView: makeRootView(presentationID))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = hosting
         controllerRef.value = self
@@ -80,6 +85,8 @@ final class StartMenuWindowController {
 
     func show(anchorFrame: NSRect) {
         lastAnchorFrame = anchorFrame
+        presentationID = UUID()
+        hosting.rootView = makeRootView(presentationID)
         panel.setFrame(layoutFrame(for: anchorFrame), display: true)
         panel.makeKeyAndOrderFront(nil)
         installClickOutsideMonitors()

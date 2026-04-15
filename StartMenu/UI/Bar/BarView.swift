@@ -3,6 +3,7 @@ import SwiftUI
 
 struct BarView: View {
     @ObservedObject var windowService: WindowService
+    @ObservedObject var menuBarExtrasService: MenuBarExtrasService
     @ObservedObject var settingsStore: SettingsStore
     let windowController: WindowController
     let onStartButtonFrame: (NSRect) -> Void
@@ -25,6 +26,13 @@ struct BarView: View {
                 onMinimize: { windowController.minimize($0) }
             )
             .layoutPriority(1)
+
+            Spacer(minLength: 8 * scale)
+
+            MenuBarExtrasButton(
+                service: menuBarExtrasService,
+                scale: scale
+            )
         }
         .padding(.horizontal, 8 * scale)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -33,6 +41,40 @@ struct BarView: View {
                 .fill(.ultraThinMaterial)
                 .overlay(Color.black.opacity(0.15))
         )
+    }
+}
+
+private struct MenuBarExtrasButton: View {
+    @ObservedObject var service: MenuBarExtrasService
+    let scale: Double
+
+    @State private var isPresented = false
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            service.refresh()
+            isPresented.toggle()
+        } label: {
+            Image(systemName: "line.3.horizontal.circle.fill")
+                .font(.system(size: 18 * scale, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36 * scale, height: 36 * scale)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.white.opacity(hovering ? 0.18 : 0.08))
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Menu bar items")
+        .onHover { hovering = $0 }
+        .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+            MenuBarExtrasPopover(
+                service: service,
+                scale: scale,
+                onDismiss: { isPresented = false }
+            )
+        }
     }
 }
 
@@ -66,6 +108,7 @@ private struct WindowChipsList: View {
     @State private var hoveredChipID: pid_t?
     @State private var edgeFrames = EdgeChipFrames()
     @State private var viewportWidth: CGFloat = 0
+    @State private var pendingHoverClear: DispatchWorkItem?
 
     private static let coordinateSpaceName = "chipScroll"
     private static let edgeSlack: CGFloat = 1.0
@@ -84,7 +127,7 @@ private struct WindowChipsList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 8 * scale) {
+                HStack(spacing: 8 * scale) {
                     ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                         WindowChipView(
                             group: group,
@@ -99,14 +142,7 @@ private struct WindowChipsList: View {
                         )
                         .contentShape(RoundedRectangle(cornerRadius: 6))
                         .onHover { inside in
-                            guard compact else { return }
-                            withAnimation(Self.hoverAnimation) {
-                                if inside {
-                                    hoveredChipID = group.id
-                                } else if hoveredChipID == group.id {
-                                    hoveredChipID = nil
-                                }
-                            }
+                            handleHoverChange(inside, for: group.id)
                         }
                         .onTapGesture { onTap(group.representative) }
                         .contextMenu {
@@ -118,6 +154,23 @@ private struct WindowChipsList: View {
                             }
                             Button("Minimize") { onMinimize(group.representative) }
                             Button("Close") { onClose(group.representative) }
+                        }
+                        .popover(
+                            isPresented: hoverPopoverBinding(for: group),
+                            attachmentAnchor: .rect(.bounds),
+                            arrowEdge: .bottom
+                        ) {
+                            if group.count > 1 {
+                                GroupWindowPicker(
+                                    group: group,
+                                    scale: scale,
+                                    onHoverChange: { inside in handleHoverChange(inside, for: group.id) },
+                                    onActivate: { window in
+                                        hoveredChipID = nil
+                                        onTap(window)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -174,6 +227,40 @@ private struct WindowChipsList: View {
         } else {
             Color.clear
         }
+    }
+
+    private func handleHoverChange(_ inside: Bool, for groupID: pid_t) {
+        pendingHoverClear?.cancel()
+        pendingHoverClear = nil
+
+        if inside {
+            withAnimation(Self.hoverAnimation) {
+                hoveredChipID = groupID
+            }
+            return
+        }
+
+        let work = DispatchWorkItem {
+            guard hoveredChipID == groupID else { return }
+            withAnimation(Self.hoverAnimation) {
+                hoveredChipID = nil
+            }
+        }
+        pendingHoverClear = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+    }
+
+    private func hoverPopoverBinding(for group: WindowGroup) -> Binding<Bool> {
+        Binding(
+            get: { group.count > 1 && hoveredChipID == group.id },
+            set: { presented in
+                if presented {
+                    handleHoverChange(true, for: group.id)
+                } else {
+                    handleHoverChange(false, for: group.id)
+                }
+            }
+        )
     }
 }
 
@@ -294,6 +381,171 @@ private struct WindowChipView: View {
         if isActive { return Color.white.opacity(0.22) }
         if isHovered { return Color.white.opacity(0.18) }
         return Color.white.opacity(0.08)
+    }
+}
+
+private struct GroupWindowPicker: View {
+    let group: WindowGroup
+    let scale: Double
+    let onHoverChange: (Bool) -> Void
+    let onActivate: (WindowInfo) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6 * scale) {
+            Text(group.ownerName)
+                .font(.system(size: 11 * scale, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+
+            ForEach(group.windows) { window in
+                Button {
+                    onActivate(window)
+                } label: {
+                    HStack(spacing: 8 * scale) {
+                        if let icon = AppIconService.shared.icon(forPID: window.ownerPID) {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: 18 * scale, height: 18 * scale)
+                                .opacity(window.isMinimized ? 0.6 : 1)
+                        }
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(window.displayTitle)
+                                .font(.system(size: 12 * scale, weight: .medium))
+                                .lineLimit(1)
+                            if window.isMinimized {
+                                Text("Minimized")
+                                    .font(.system(size: 10 * scale))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10 * scale)
+                    .padding(.vertical, 7 * scale)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12 * scale)
+        .frame(width: 280 * scale)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(.ultraThinMaterial)
+                .overlay(Color.black.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.08))
+        )
+        .onHover(perform: onHoverChange)
+    }
+}
+
+private struct MenuBarExtrasPopover: View {
+    @ObservedObject var service: MenuBarExtrasService
+    let scale: Double
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10 * scale) {
+            HStack {
+                Text("Menu Bar Items")
+                    .font(.system(size: 13 * scale, weight: .semibold))
+                Spacer()
+                Button {
+                    service.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12 * scale, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Refresh")
+            }
+
+            if !service.hasAccessibilityAccess {
+                Text("Accessibility access is required to read and trigger menu bar items.")
+                    .font(.system(size: 12 * scale))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if service.items.isEmpty {
+                Text("No menu bar items found.")
+                    .font(.system(size: 12 * scale))
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6 * scale) {
+                        ForEach(service.items) { item in
+                            Button {
+                                service.activate(item)
+                                onDismiss()
+                            } label: {
+                                HStack(spacing: 10 * scale) {
+                                    if let icon = AppIconService.shared.icon(forPID: item.ownerPID) {
+                                        Image(nsImage: icon)
+                                            .resizable()
+                                            .interpolation(.high)
+                                            .frame(width: 20 * scale, height: 20 * scale)
+                                    } else {
+                                        Image(systemName: "menubar.rectangle")
+                                            .font(.system(size: 15 * scale, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.9))
+                                            .frame(width: 20 * scale, height: 20 * scale)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.displayTitle)
+                                            .font(.system(size: 12 * scale, weight: .medium))
+                                            .lineLimit(1)
+                                        if let subtitle = item.subtitle {
+                                            Text(subtitle)
+                                                .font(.system(size: 10 * scale))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 10 * scale)
+                                .padding(.vertical, 8 * scale)
+                                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Activate") {
+                                    service.activate(item)
+                                    onDismiss()
+                                }
+                                if item.canShowMenu || item.canPress {
+                                    Button("Open Menu") {
+                                        service.showMenu(for: item)
+                                        onDismiss()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 360 * scale)
+            }
+        }
+        .padding(14 * scale)
+        .frame(width: 320 * scale)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThinMaterial)
+                .overlay(Color.black.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.08))
+        )
     }
 }
 

@@ -6,6 +6,10 @@ import os
 @MainActor
 final class WindowController {
     private let log = Logger(subsystem: "app.pavlenko.startmenu", category: "windows")
+    private static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
+    private static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
+    private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
+    private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
 
     func activate(_ window: WindowInfo) {
         log.info("activate pid=\(window.ownerPID, privacy: .public) title=\(window.displayTitle, privacy: .public)")
@@ -40,7 +44,13 @@ final class WindowController {
         log.info("close pid=\(window.ownerPID, privacy: .public) wid=\(window.id, privacy: .public)")
 
         guard let ax = findAXWindow(for: window) else {
-            log.error("close: findAXWindow returned nil")
+            log.error("close: findAXWindow returned nil, using app-level fallback")
+            bringAppToFront(pid: window.ownerPID)
+            runScript("""
+            tell application "System Events"
+                keystroke "w" using {command down}
+            end tell
+            """, label: "close-fallback-no-ax")
             return
         }
         log.info("close: found AX window")
@@ -70,7 +80,13 @@ final class WindowController {
         log.info("minimize pid=\(window.ownerPID, privacy: .public) wid=\(window.id, privacy: .public)")
 
         guard let ax = findAXWindow(for: window) else {
-            log.error("minimize: findAXWindow returned nil")
+            log.error("minimize: findAXWindow returned nil, using app-level fallback")
+            bringAppToFront(pid: window.ownerPID)
+            runScript("""
+            tell application "System Events"
+                keystroke "m" using {command down}
+            end tell
+            """, label: "minimize-fallback-no-ax")
             return
         }
         log.info("minimize: found AX window")
@@ -112,13 +128,7 @@ final class WindowController {
         let trusted = AXIsProcessTrusted()
         log.info("findAXWindow: pid=\(window.ownerPID, privacy: .public) AXIsProcessTrusted=\(trusted, privacy: .public)")
         let app = AXUIElementCreateApplication(window.ownerPID)
-        var windowsRef: CFTypeRef?
-        let copyErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
-        guard copyErr == .success, let ref = windowsRef else {
-            log.error("findAXWindow: pid=\(window.ownerPID, privacy: .public) copyErr=\(copyErr.rawValue, privacy: .public)")
-            return nil
-        }
-        let axWindows = ref as! [AXUIElement]
+        let axWindows = copyAXWindows(for: app)
         log.info("findAXWindow: pid=\(window.ownerPID, privacy: .public) count=\(axWindows.count, privacy: .public)")
         if axWindows.isEmpty { return nil }
 
@@ -135,6 +145,44 @@ final class WindowController {
         }
         log.info("findAXWindow: fallback to first window")
         return axWindows.first
+    }
+
+    private func copyAXWindows(for app: AXUIElement) -> [AXUIElement] {
+        var windowsRef: CFTypeRef?
+        var copyErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
+        if copyErr == .apiDisabled || copyErr == .cannotComplete || copyErr == .attributeUnsupported {
+            wakeAccessibilityTree(for: app)
+            windowsRef = nil
+            copyErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
+        }
+
+        if copyErr == .success, let ref = windowsRef as? [AXUIElement], !ref.isEmpty {
+            return ref
+        }
+
+        log.error("findAXWindow: fallback copyErr=\(copyErr.rawValue, privacy: .public)")
+
+        var fallback: [AXUIElement] = []
+        if let focused = copyWindow(app, attribute: Self.axFocusedWindowAttribute) {
+            fallback.append(focused)
+        }
+        if let main = copyWindow(app, attribute: Self.axMainWindowAttribute),
+           !fallback.contains(where: { CFEqual($0, main) }) {
+            fallback.append(main)
+        }
+        return fallback
+    }
+
+    private func wakeAccessibilityTree(for app: AXUIElement) {
+        AXUIElementSetAttributeValue(app, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(app, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
+    }
+
+    private func copyWindow(_ app: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, attribute, &value) == .success,
+              let value else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
     }
 
     private func matches(_ window: WindowInfo, ax: AXUIElement) -> Bool {
