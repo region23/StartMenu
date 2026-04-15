@@ -135,13 +135,13 @@ GitHub release with auto-generated release notes:
 ./scripts/release.sh 0.1.0
 ```
 
-If you use Claude Code in this repository, there is also a local slash command:
+If you use Codex in this repository, there is also a local slash command:
 
 ```text
 /release 0.1.0
 ```
 
-It lives in [.claude/commands/release.md](/Users/pavlenko/code/start_menu/.claude/commands/release.md) and wraps the same release flow.
+It lives in [release.md](/Users/pavlenko/code/start_menu/.codex/commands/release.md) and wraps the same release flow.
 
 The script requires a clean working tree on `main`, the `gh` CLI
 authenticated, and `xcodegen` installed. It passes

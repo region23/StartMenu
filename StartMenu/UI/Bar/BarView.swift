@@ -577,43 +577,13 @@ private struct MenuBarExtrasPopover: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6 * scale) {
+                    LazyVStack(alignment: .leading, spacing: 2 * scale) {
                         ForEach(service.items) { item in
                             Button {
                                 service.activate(item)
                                 onDismiss()
                             } label: {
-                                HStack(spacing: 10 * scale) {
-                                    if let icon = AppIconService.shared.icon(forPID: item.ownerPID) {
-                                        Image(nsImage: icon)
-                                            .resizable()
-                                            .interpolation(.high)
-                                            .frame(width: 20 * scale, height: 20 * scale)
-                                    } else {
-                                        Image(systemName: "menubar.rectangle")
-                                            .font(.system(size: 15 * scale, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.9))
-                                            .frame(width: 20 * scale, height: 20 * scale)
-                                    }
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(item.displayTitle)
-                                            .font(.system(size: 12 * scale, weight: .medium))
-                                            .lineLimit(1)
-                                        if let subtitle = item.subtitle {
-                                            Text(subtitle)
-                                                .font(.system(size: 10 * scale))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.horizontal, 10 * scale)
-                                .padding(.vertical, 8 * scale)
-                                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                                .contentShape(Rectangle())
+                                MenuBarExtraRow(item: item, scale: scale)
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
@@ -645,6 +615,51 @@ private struct MenuBarExtrasPopover: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.08))
         )
+    }
+}
+
+private struct MenuBarExtraRow: View {
+    let item: MenuBarExtraInfo
+    let scale: Double
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10 * scale) {
+            if let icon = AppIconService.shared.icon(forPID: item.ownerPID) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 20 * scale, height: 20 * scale)
+            } else {
+                Image(systemName: "menubar.rectangle")
+                    .font(.system(size: 15 * scale, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 20 * scale, height: 20 * scale)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayTitle)
+                    .font(.system(size: 12 * scale, weight: .medium))
+                    .lineLimit(1)
+                if let subtitle = item.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 10 * scale))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8 * scale)
+        .padding(.vertical, 6 * scale)
+        .background(
+            Color.white.opacity(hovering ? 0.22 : 0.0),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 }
 
