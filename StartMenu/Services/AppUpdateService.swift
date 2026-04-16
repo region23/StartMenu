@@ -14,6 +14,7 @@ final class AppUpdateService: ObservableObject {
         case checking
         case upToDate(ReleaseInfo)
         case updateAvailable(currentVersion: String, latest: ReleaseInfo)
+        case disabled(message: String)
         case failed
     }
 
@@ -22,6 +23,7 @@ final class AppUpdateService: ObservableObject {
     @Published private(set) var status: Status = .idle
 
     private let currentVersion: String
+    private let flavor: AppFlavor
     private let session: URLSession
     private var lastCheckedAt: Date?
     private var refreshTask: Task<Void, Never>?
@@ -30,9 +32,17 @@ final class AppUpdateService: ObservableObject {
     private static let latestReleaseAPIURL = URL(string: "https://api.github.com/repos/region23/StartMenu/releases/latest")!
     private static let minimumRefreshInterval: TimeInterval = 60 * 60 * 6
 
-    init(session: URLSession = .shared) {
+    init(
+        session: URLSession = .shared,
+        flavor: AppFlavor = .current
+    ) {
+        self.flavor = flavor
         self.session = session
         self.currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        if !flavor.usesPublicReleaseChannel {
+            status = .disabled(message: "Private builds stay off the public Homebrew/release flow.")
+            return
+        }
         refreshIfNeeded()
     }
 
@@ -43,6 +53,7 @@ final class AppUpdateService: ObservableObject {
     var upgradeCommand: String { Self.upgradeCommand }
 
     func refreshIfNeeded(force: Bool = false) {
+        guard flavor.usesPublicReleaseChannel else { return }
         guard force || shouldRefresh else { return }
 
         refreshTask?.cancel()
@@ -52,6 +63,7 @@ final class AppUpdateService: ObservableObject {
     }
 
     func copyUpgradeCommand() {
+        guard flavor.usesPublicReleaseChannel else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(Self.upgradeCommand, forType: .string)
     }

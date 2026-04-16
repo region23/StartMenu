@@ -3,7 +3,6 @@ import ApplicationServices
 import Combine
 import CoreGraphics
 import Foundation
-import os.log
 
 @MainActor
 final class WindowService: ObservableObject {
@@ -17,6 +16,7 @@ final class WindowService: ObservableObject {
     /// don't render under the taskbar.
     weak var barWindow: NSWindow?
 
+    private let windowConstrainer: any WindowConstraining
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
 
@@ -36,7 +36,8 @@ final class WindowService: ObservableObject {
         "StartMenu"
     ]
 
-    init() {
+    init(windowConstrainer: any WindowConstraining) {
+        self.windowConstrainer = windowConstrainer
         activeAppPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         refresh()
         start()
@@ -112,7 +113,7 @@ final class WindowService: ObservableObject {
         if sorted != windows { windows = sorted }
 
         updateBarVisibility()
-        clampWindowsAboveBar()
+        windowConstrainer.refresh(barWindow: barWindow)
     }
 
     /// For every running `.regular` application that wasn't picked up
@@ -141,9 +142,6 @@ final class WindowService: ObservableObject {
             if Self.excludedOwnerNames.contains(name) { continue }
             if name.isEmpty { continue }
 
-            // Stable per-PID synthetic id, parked in the high 0xE-range
-            // so it never collides with real CGWindowIDs (small) or the
-            // synthetic ids collectMinimizedWindows hands out (0xC-range).
             let synthID = CGWindowID(0xE000_0000 | (UInt32(bitPattern: pid) & 0x1FFF_FFFF))
 
             result.append(WindowInfo(
@@ -163,15 +161,6 @@ final class WindowService: ObservableObject {
 
         return result
     }
-
-    // MARK: - Clamp windows to stay above the bar
-
-    private static let axFullScreenAttribute = "AXFullScreen" as CFString
-    private static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
-    private static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
-    private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
-    private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
-    private static let log = OSLog(subsystem: "app.pavlenko.startmenu", category: "clamp")
 
     private struct AXWindowDetails {
         let title: String
@@ -193,206 +182,15 @@ final class WindowService: ObservableObject {
         let layer: Int
     }
 
-    private func clampWindowsAboveBar() {
-        guard let bar = barWindow,
-              let screen = bar.screen ?? NSScreen.main else { return }
-
-        // If any app is in native fullscreen on this screen, updateBarVisibility
-        // has already ordered the bar out of the way. Nothing to clamp.
-        if isAnyAppInNativeFullscreen(on: screen) { return }
-
-        let screenHeight = screen.frame.height
-        let visible = screen.visibleFrame
-        // Top of usable area (Quartz). Menu bar lives above this.
-        let topQuartz = screenHeight - visible.maxY
-        // Bar's top edge in Quartz.
-        let barTopQuartz = screenHeight - bar.frame.maxY
-        let usableHeight = barTopQuartz - topQuartz
-        let ours = ProcessInfo.processInfo.processIdentifier
-
-        for app in NSWorkspace.shared.runningApplications {
-            guard app.activationPolicy == .regular else { continue }
-            let pid = app.processIdentifier
-            if pid == ours { continue }
-
-            let appElement = AXUIElementCreateApplication(pid)
-            let axWindows = copyAXWindows(for: appElement)
-            if axWindows.isEmpty { continue }
-
-            for ax in axWindows {
-                var minRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(ax, kAXMinimizedAttribute as CFString, &minRef) == .success,
-                   (minRef as? Bool) == true { continue }
-
-                var roleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(ax, kAXRoleAttribute as CFString, &roleRef)
-                let role = (roleRef as? String) ?? "?"
-                var subroleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(ax, kAXSubroleAttribute as CFString, &subroleRef)
-                let subrole = (subroleRef as? String) ?? "?"
-
-                // Native fullscreen windows live in their own Space and
-                // aren't ours to resize — the bar auto-hides while a
-                // fullscreen app is frontmost, so skip silently.
-                var fsRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(ax, Self.axFullScreenAttribute, &fsRef) == .success,
-                   (fsRef as? Bool) == true { continue }
-
-                let position = axPoint(ax, attribute: kAXPositionAttribute as CFString) ?? .zero
-                let size = axSize(ax, attribute: kAXSizeAttribute as CFString) ?? .zero
-
-                // Only touch real application windows. This drops Finder's
-                // Desktop (role=AXScrollArea), palettes, tooltips, etc.
-                if role != kAXWindowRole as String { continue }
-                if subrole != kAXStandardWindowSubrole as String { continue }
-
-                let windowBottom = position.y + size.height
-                let extendsPastBar = windowBottom > barTopQuartz + 0.5
-                let startsAboveTop = position.y < topQuartz - 0.5
-                guard extendsPastBar || startsAboveTop else { continue }
-
-                let newY = max(position.y, topQuartz)
-                let maxHeight = barTopQuartz - newY
-                let newHeight = min(size.height, maxHeight)
-                if newHeight < 80 || usableHeight < 80 { continue }
-
-                let clamped = applyClamp(
-                    ax,
-                    from: position,
-                    size: size,
-                    targetY: newY,
-                    targetHeight: newHeight
-                )
-                let logType: OSLogType = clamped ? .info : .error
-                os_log(
-                    "clamp pid=%{public}d oldY=%{public}.0f oldH=%{public}.0f -> newY=%{public}.0f newH=%{public}.0f ok=%{public}s",
-                    log: Self.log,
-                    type: logType,
-                    pid,
-                    position.y,
-                    size.height,
-                    newY,
-                    newHeight,
-                    clamped ? "yes" : "no"
-                )
-            }
-        }
-    }
-
-    // MARK: - Native fullscreen detection
-
-    /// Returns true iff CGWindowList shows any non-StartMenu window on
-    /// the given screen whose layer is 0 and whose bounds exactly cover
-    /// the full screen frame (origin 0,0 + size = screen.frame.size).
-    /// That's the native fullscreen signature — zoomed/maximised
-    /// windows still leave the menu bar visible and therefore have a
-    /// positive top-Y offset.
-    private func isAnyAppInNativeFullscreen(on screen: NSScreen) -> Bool {
-        let ours = ProcessInfo.processInfo.processIdentifier
-        let screenSize = screen.frame.size
-        guard let raw = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else { return false }
-
-        for entry in raw {
-            guard let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != ours else { continue }
-            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-            guard let dict = entry[kCGWindowBounds as String] as? NSDictionary else { continue }
-            var bounds = CGRect.zero
-            CGRectMakeWithDictionaryRepresentation(dict as CFDictionary, &bounds)
-            if abs(bounds.origin.x) < 0.5,
-               abs(bounds.origin.y) < 0.5,
-               abs(bounds.size.width - screenSize.width) < 0.5,
-               abs(bounds.size.height - screenSize.height) < 0.5 {
-                return true
-            }
-        }
-        return false
-    }
-
     private func updateBarVisibility() {
         guard let bar = barWindow else { return }
-        let screen = bar.screen ?? NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
 
-        let shouldHide = isAnyAppInNativeFullscreen(on: screen)
+        let shouldHide = windowConstrainer.shouldHideBar(for: bar)
         if shouldHide, bar.isVisible {
             bar.orderOut(nil)
         } else if !shouldHide, !bar.isVisible {
             bar.orderFrontRegardless()
         }
-    }
-
-    private func axPoint(_ element: AXUIElement, attribute: CFString) -> CGPoint? {
-        var valueRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
-              let value = valueRef else { return nil }
-        var point = CGPoint.zero
-        AXValueGetValue(value as! AXValue, .cgPoint, &point)
-        return point
-    }
-
-    private func axSize(_ element: AXUIElement, attribute: CFString) -> CGSize? {
-        var valueRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
-              let value = valueRef else { return nil }
-        var size = CGSize.zero
-        AXValueGetValue(value as! AXValue, .cgSize, &size)
-        return size
-    }
-
-    @discardableResult
-    private func setAXSize(_ element: AXUIElement, size: CGSize) -> AXError {
-        var s = size
-        guard let value = AXValueCreate(.cgSize, &s) else { return .failure }
-        return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
-    }
-
-    @discardableResult
-    private func setAXPosition(_ element: AXUIElement, point: CGPoint) -> AXError {
-        var p = point
-        guard let value = AXValueCreate(.cgPoint, &p) else { return .failure }
-        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
-    }
-
-    private func copyAXWindows(for appElement: AXUIElement) -> [AXUIElement] {
-        var windowsRef: CFTypeRef?
-        var listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-
-        // Chromium/Electron apps often keep their AX tree asleep until
-        // another client explicitly opts them into manual AX access.
-        if listErr == .apiDisabled || listErr == .cannotComplete || listErr == .attributeUnsupported {
-            wakeAccessibilityTree(for: appElement)
-            windowsRef = nil
-            listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        }
-
-        if listErr == .success, let ref = windowsRef as? [AXUIElement], !ref.isEmpty {
-            return ref
-        }
-
-        var fallback: [AXUIElement] = []
-        if let focused = copyAXWindow(appElement, attribute: Self.axFocusedWindowAttribute) {
-            fallback.append(focused)
-        }
-        if let main = copyAXWindow(appElement, attribute: Self.axMainWindowAttribute),
-           !fallback.contains(where: { CFEqual($0, main) }) {
-            fallback.append(main)
-        }
-        return fallback
-    }
-
-    private func wakeAccessibilityTree(for appElement: AXUIElement) {
-        AXUIElementSetAttributeValue(appElement, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(appElement, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
-    }
-
-    private func copyAXWindow(_ appElement: AXUIElement, attribute: CFString) -> AXUIElement? {
-        var valueRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, attribute, &valueRef) == .success,
-              let window = valueRef else { return nil }
-        return (window as! AXUIElement)
     }
 
     private func copyAXString(_ element: AXUIElement, attribute: CFString) -> String {
@@ -468,6 +266,48 @@ final class WindowService: ObservableObject {
         )
     }
 
+    private static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
+    private static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
+    private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
+    private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
+
+    private func copyAXWindows(for appElement: AXUIElement) -> [AXUIElement] {
+        var windowsRef: CFTypeRef?
+        var listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+        if listErr == .apiDisabled || listErr == .cannotComplete || listErr == .attributeUnsupported {
+            wakeAccessibilityTree(for: appElement)
+            windowsRef = nil
+            listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+        }
+
+        if listErr == .success, let ref = windowsRef as? [AXUIElement], !ref.isEmpty {
+            return ref
+        }
+
+        var fallback: [AXUIElement] = []
+        if let focused = copyAXWindow(appElement, attribute: Self.axFocusedWindowAttribute) {
+            fallback.append(focused)
+        }
+        if let main = copyAXWindow(appElement, attribute: Self.axMainWindowAttribute),
+           !fallback.contains(where: { CFEqual($0, main) }) {
+            fallback.append(main)
+        }
+        return fallback
+    }
+
+    private func wakeAccessibilityTree(for appElement: AXUIElement) {
+        AXUIElementSetAttributeValue(appElement, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(appElement, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
+    }
+
+    private func copyAXWindow(_ appElement: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, attribute, &valueRef) == .success,
+              let window = valueRef else { return nil }
+        return unsafeBitCast(window, to: AXUIElement.self)
+    }
+
     private func copyAXWindowDetailsByID(for app: NSRunningApplication) -> [CGWindowID: AXWindowDetails] {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         let axWindows = copyAXWindows(for: appElement)
@@ -483,53 +323,6 @@ final class WindowService: ObservableObject {
             )
         }
         return result
-    }
-
-    private func applyClamp(
-        _ ax: AXUIElement,
-        from position: CGPoint,
-        size: CGSize,
-        targetY: CGFloat,
-        targetHeight: CGFloat
-    ) -> Bool {
-        let targetPoint = CGPoint(x: position.x, y: targetY)
-        let targetSize = CGSize(width: size.width, height: targetHeight)
-        let needsMove = abs(targetY - position.y) > 0.5
-        let needsResize = abs(targetHeight - size.height) > 0.5
-
-        let attempts: [[(AXUIElement) -> AXError]] = {
-            switch (needsMove, needsResize) {
-            case (true, true):
-                return [
-                    [{ self.setAXSize($0, size: targetSize) }, { self.setAXPosition($0, point: targetPoint) }],
-                    [{ self.setAXPosition($0, point: targetPoint) }, { self.setAXSize($0, size: targetSize) }]
-                ]
-            case (true, false):
-                return [[{ self.setAXPosition($0, point: targetPoint) }]]
-            case (false, true):
-                return [[{ self.setAXSize($0, size: targetSize) }]]
-            case (false, false):
-                return []
-            }
-        }()
-
-        for operations in attempts {
-            var operationFailed = false
-            for operation in operations {
-                let err = operation(ax)
-                if err != .success { operationFailed = true }
-            }
-
-            guard !operationFailed else { continue }
-
-            let currentY = axPoint(ax, attribute: kAXPositionAttribute as CFString)?.y ?? position.y
-            let currentHeight = axSize(ax, attribute: kAXSizeAttribute as CFString)?.height ?? size.height
-            if abs(currentY - targetY) <= 1.0, abs(currentHeight - targetHeight) <= 1.0 {
-                return true
-            }
-        }
-
-        return attempts.isEmpty
     }
 
     // MARK: - Onscreen

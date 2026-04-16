@@ -85,6 +85,31 @@ window asks for **Accessibility** permission. Click **Request**, then toggle
 `StartMenu` on in *System Settings → Privacy & Security → Accessibility*. The
 onboarding window auto-closes as soon as the grant takes effect.
 
+### Power-user private build
+
+The repo now has a separate `StartMenuPowerUser` target for Dock/window-server
+experiments. It uses a different bundle id, defaults store, signing
+requirement, install path and diagnostics surface, so it stays isolated from
+the public app:
+
+```sh
+./scripts/run-power-user.sh
+```
+
+This builds and installs `~/Applications/StartMenuPowerUser.app` with bundle id
+`app.pavlenko.startmenu.poweruser`. The private build shares the same UI, but
+adds a **Power-user private build** section in Settings with feature flags and
+diagnostics for the Dock-owned reservation path.
+
+When the `Real desktop reservation` flag is enabled in the private build,
+Start Menu keeps the system Dock alive at the bottom of the screen with a
+minimal profile and places the Start Menu bar inside that reserved strip.
+Other apps then lay out above the Dock-owned area instead of opening or
+maximizing underneath the bar. If reservation cannot be measured cleanly, the
+private build reports a warning in diagnostics and falls back to the requested
+bar height while the public AX clamp remains available as a secondary safety
+net.
+
 ## Permissions
 
 | Permission                                  | Needed for                                          |
@@ -183,7 +208,8 @@ the onboarding dance entirely.
 
 ### Logs
 
-The app logs through `os.Logger` with the `app.pavlenko.startmenu` subsystem.
+The public app logs through `os.Logger` with the `app.pavlenko.startmenu`
+subsystem. The private build uses `app.pavlenko.startmenu.poweruser`.
 To stream logs in a terminal:
 
 ```sh

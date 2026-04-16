@@ -7,6 +7,8 @@ struct StartMenuView: View {
     @ObservedObject var appUpdateService: AppUpdateService
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var autostartService: AutostartService
+    @ObservedObject var powerUserFeatureFlags: PowerUserFeatureFlags
+    @ObservedObject var powerUserDiagnosticsStore: PowerUserDiagnosticsStore
     let presentationID: UUID
     let onHoverChange: (Bool) -> Void
     let onLaunch: (AppInfo) -> Void
@@ -20,6 +22,8 @@ struct StartMenuView: View {
     private enum Mode { case home, allApps, settings }
 
     private var scale: Double { settingsStore.uiScale }
+    private var diagnosticsSnapshot: PowerUserDiagnosticsStore.Snapshot { powerUserDiagnosticsStore.snapshot }
+    private var showsPowerUserPanel: Bool { AppFlavor.current.isPowerUser }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -194,11 +198,99 @@ struct StartMenuView: View {
                     }
                     .toggleStyle(.switch)
 
+                    if showsPowerUserPanel {
+                        Divider().opacity(0.2)
+                        powerUserSection
+                    }
+
                     Divider().opacity(0.2)
 
                     aboutSection
                 }
             }
+        }
+    }
+
+    private var powerUserSection: some View {
+        VStack(alignment: .leading, spacing: 10 * scale) {
+            Text("Power-user private build")
+                .font(.system(size: 11 * scale, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+
+            ForEach(PowerUserFeatureFlag.allCases) { flag in
+                Toggle(isOn: Binding(
+                    get: { powerUserFeatureFlags.isEnabled(flag) },
+                    set: {
+                        powerUserFeatureFlags.setEnabled($0, for: flag)
+                        powerUserDiagnosticsStore.refresh()
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(flag.title)
+                            .font(.system(size: 13 * scale))
+                        Text(flag.details)
+                            .font(.system(size: 11 * scale))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+
+            VStack(alignment: .leading, spacing: 8 * scale) {
+                HStack {
+                    Text("Diagnostics")
+                        .font(.system(size: 13 * scale, weight: .semibold))
+                    Spacer()
+                    smallActionButton(title: "Refresh") {
+                        powerUserDiagnosticsStore.refresh()
+                    }
+                }
+
+                diagnosticRow(title: "Reservation bridge", value: diagnosticsSnapshot.helperConnectionStatus)
+                diagnosticRow(title: "Reservation strategy", value: diagnosticsSnapshot.activeReservationStrategy)
+                diagnosticRow(title: "Window constrainer", value: diagnosticsSnapshot.activeWindowConstrainer)
+
+                if let metrics = diagnosticsSnapshot.displayMetrics {
+                    diagnosticRow(
+                        title: "Display",
+                        value: "\(metrics.displayName) • frame \(rectString(metrics.frame)) • visible \(rectString(metrics.visibleFrame))"
+                    )
+                    if let barFrame = metrics.barFrame {
+                        diagnosticRow(title: "Bar frame", value: rectString(barFrame))
+                    }
+                }
+
+                if let lastBridgeError = diagnosticsSnapshot.lastBridgeError {
+                    diagnosticRow(title: "Last reservation warning", value: lastBridgeError)
+                }
+
+                VStack(alignment: .leading, spacing: 6 * scale) {
+                    Text("Prerequisites")
+                        .font(.system(size: 11 * scale, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
+                    ForEach(diagnosticsSnapshot.prerequisites) { prerequisite in
+                        HStack(alignment: .top, spacing: 8 * scale) {
+                            Image(systemName: prerequisite.isSatisfied ? "checkmark.circle.fill" : "xmark.circle")
+                                .foregroundStyle(prerequisite.isSatisfied ? .green : .red)
+                                .font(.system(size: 12 * scale))
+                                .padding(.top, 2 * scale)
+
+                            VStack(alignment: .leading, spacing: 2 * scale) {
+                                Text(prerequisite.title)
+                                    .font(.system(size: 12 * scale, weight: .medium))
+                                Text(prerequisite.details)
+                                    .font(.system(size: 11 * scale))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(10 * scale)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -217,6 +309,17 @@ struct StartMenuView: View {
                     .font(.system(size: 13 * scale))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+            }
+            .padding(.horizontal, 8 * scale)
+            .padding(.vertical, 4 * scale)
+
+            HStack {
+                Text("Channel")
+                    .font(.system(size: 13 * scale))
+                Spacer()
+                Text(AppFlavor.current.isPowerUser ? "Private build" : "Public release")
+                    .font(.system(size: 13 * scale))
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 8 * scale)
             .padding(.vertical, 4 * scale)
@@ -310,6 +413,12 @@ struct StartMenuView: View {
                     }
                 }
             }
+
+        case .disabled(let message):
+            updateStatusRow(
+                title: "Updates",
+                message: message
+            )
         }
     }
 
@@ -348,6 +457,22 @@ struct StartMenuView: View {
         .padding(.vertical, 8 * scale)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func diagnosticRow(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3 * scale) {
+            Text(title)
+                .font(.system(size: 11 * scale, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            Text(value)
+                .font(.system(size: 12 * scale))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 8 * scale)
+        .padding(.vertical, 6 * scale)
+        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
@@ -419,6 +544,14 @@ struct StartMenuView: View {
 
     private func isSelectedScale(_ option: UIScale) -> Bool {
         abs(option.rawValue - settingsStore.uiScale) < 0.001
+    }
+
+    private func rectString(_ rect: CGRect) -> String {
+        let x = Int(rect.origin.x.rounded())
+        let y = Int(rect.origin.y.rounded())
+        let width = Int(rect.width.rounded())
+        let height = Int(rect.height.rounded())
+        return "x:\(x) y:\(y) w:\(width) h:\(height)"
     }
 
     @ViewBuilder

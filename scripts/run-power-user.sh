@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Build the private/power-user target, copy it to a separate install path, relaunch.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+PROJECT="StartMenu.xcodeproj"
+SCHEME="StartMenuPowerUser"
+CONFIG="Debug"
+BUNDLE_ID="app.pavlenko.startmenu.poweruser"
+INSTALL_DIR="$HOME/Applications"
+INSTALL_PATH="$INSTALL_DIR/StartMenuPowerUser.app"
+
+echo "==> Regenerating Xcode project"
+xcodegen generate >/dev/null
+
+echo "==> Building ($CONFIG, $SCHEME)"
+BUILD_LOG=$(mktemp)
+set +e
+xcodebuild \
+    -project "$PROJECT" \
+    -scheme "$SCHEME" \
+    -configuration "$CONFIG" \
+    -destination 'platform=macOS' \
+    build >"$BUILD_LOG" 2>&1
+BUILD_STATUS=$?
+set -e
+
+grep -E 'error:|warning:|BUILD (SUCCEEDED|FAILED)' "$BUILD_LOG" || true
+
+if [ $BUILD_STATUS -ne 0 ]; then
+    echo "error: build failed (status $BUILD_STATUS)" >&2
+    rm -f "$BUILD_LOG"
+    exit 1
+fi
+rm -f "$BUILD_LOG"
+
+BUILT_APP=$(find ~/Library/Developer/Xcode/DerivedData/StartMenu-*/Build/Products/$CONFIG -name "StartMenuPowerUser.app" -type d 2>/dev/null | head -1)
+if [ -z "$BUILT_APP" ]; then
+    echo "error: built .app not found" >&2
+    exit 1
+fi
+
+echo "==> Killing running instance"
+pkill -x StartMenuPowerUser 2>/dev/null || true
+sleep 0.3
+
+echo "==> Resetting TCC grants for $BUNDLE_ID"
+tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset ScreenCapture "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset AppleEvents "$BUNDLE_ID" 2>/dev/null || true
+
+echo "==> Installing to $INSTALL_PATH"
+mkdir -p "$INSTALL_DIR"
+rm -rf "$INSTALL_PATH"
+cp -R "$BUILT_APP" "$INSTALL_PATH"
+
+echo "==> Launching"
+open "$INSTALL_PATH"
+
+echo "==> Done"

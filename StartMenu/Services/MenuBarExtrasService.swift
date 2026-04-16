@@ -10,7 +10,7 @@ final class MenuBarExtrasService: ObservableObject {
 
     private var timer: Timer?
     private var elementsByID: [String: AXUIElement] = [:]
-    private let log = Logger(subsystem: "app.pavlenko.startmenu", category: "menuextras")
+    private let log = Logger(subsystem: AppFlavor.current.logSubsystem, category: "menuextras")
 
     private static let refreshInterval: TimeInterval = 3.0
     private static let minimumVisibleItemSize = CGSize(width: 8, height: 8)

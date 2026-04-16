@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
@@ -10,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyService = HotkeyService()
     private var sigtermSource: DispatchSourceSignal?
     private var sigintSource: DispatchSourceSignal?
+    private var cancellables: Set<AnyCancellable> = []
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -21,10 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installSignalHandler(SIGTERM, keeping: &sigtermSource)
         installSignalHandler(SIGINT, keeping: &sigintSource)
 
-        // Always hide the system Dock while Start Menu is running. It is
-        // restored on quit via applicationWillTerminate or the signal
-        // handlers above.
-        environment.dockControlService.hide()
+        configureDockMode()
+        installDockModeObservers()
+        installWorkspaceObservers()
+        environment.powerUserBridge.connectIfNeeded()
 
         let startMenu = StartMenuWindowController(
             startMenuService: environment.startMenuService,
@@ -32,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appUpdateService: environment.appUpdateService,
             settingsStore: environment.settingsStore,
             autostartService: environment.autostartService,
+            powerUserFeatureFlags: environment.powerUserFeatureFlags,
+            powerUserDiagnosticsStore: environment.powerUserDiagnosticsStore,
             onLaunch: { [weak self] app in
                 self?.launch(app)
             },
@@ -46,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menuBarExtrasService: environment.menuBarExtrasService,
             windowController: environment.windowController,
             settingsStore: environment.settingsStore,
+            dockControlService: environment.dockControlService,
             onStartTapped: { [weak self] frame in
                 self?.startMenuWindowController?.toggle(anchorFrame: frame)
             }
@@ -54,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         barWindowController = bar
         startMenu.setIgnoreClicksInWindow(bar.window)
         environment.windowService.barWindow = bar.window
+        environment.powerUserDiagnosticsStore.refresh()
 
         hotkeyService.registerCtrlSpace { [weak self] in
             guard let self, let bar = self.barWindowController else { return }
@@ -69,8 +76,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func configureDockMode() {
+        let barHeight = BarMetrics.height(for: environment.settingsStore.uiScale)
+        if environment.appFlavor.isPowerUser,
+           environment.powerUserFeatureFlags.isEnabled(.realDesktopReservation) {
+            environment.dockControlService.reserveSpace(forBarHeight: barHeight)
+        } else {
+            environment.dockControlService.hide()
+        }
+        environment.powerUserDiagnosticsStore.refresh()
+    }
+
+    private func refreshDockGeometryIfNeeded() {
+        let barHeight = BarMetrics.height(for: environment.settingsStore.uiScale)
+
+        if environment.appFlavor.isPowerUser,
+           environment.powerUserFeatureFlags.isEnabled(.realDesktopReservation) {
+            environment.dockControlService.refreshReservation(forBarHeight: barHeight)
+            environment.powerUserDiagnosticsStore.refresh()
+        }
+    }
+
+    private func installDockModeObservers() {
+        environment.settingsStore.$uiScale
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.configureDockMode()
+            }
+            .store(in: &cancellables)
+
+        environment.powerUserFeatureFlags.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.configureDockMode()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func installWorkspaceObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+
+        for name in [
+            NSWorkspace.activeSpaceDidChangeNotification,
+            NSWorkspace.didWakeNotification
+        ] {
+            let token = center.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.refreshDockGeometryIfNeeded()
+                }
+            }
+            workspaceObservers.append(token)
+        }
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        if environment.dockControlService.isHidden {
+        if environment.dockControlService.hasManagedDockState {
             environment.dockControlService.restore()
         }
     }
@@ -129,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
         src.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
-                if self?.environment.dockControlService.isHidden == true {
+                if self?.environment.dockControlService.hasManagedDockState == true {
                     self?.environment.dockControlService.restore()
                 }
             }
@@ -137,5 +210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         src.resume()
         holder = src
+    }
+
+    @objc private func screenParametersChanged() {
+        refreshDockGeometryIfNeeded()
     }
 }

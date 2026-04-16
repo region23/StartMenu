@@ -9,28 +9,34 @@ final class BarWindowController {
     private let menuBarExtrasService: MenuBarExtrasService
     private let windowController: WindowController
     private let settingsStore: SettingsStore
+    private let dockControlService: DockControlService
     private let onStartTapped: (NSRect) -> Void
 
     private var lastStartFrame: NSRect = .zero
     private var cancellables: Set<AnyCancellable> = []
-
-    private static let baseBarHeight: CGFloat = 44
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     init(
         windowService: WindowService,
         menuBarExtrasService: MenuBarExtrasService,
         windowController: WindowController,
         settingsStore: SettingsStore,
+        dockControlService: DockControlService,
         onStartTapped: @escaping (NSRect) -> Void
     ) {
         self.windowService = windowService
         self.menuBarExtrasService = menuBarExtrasService
         self.windowController = windowController
         self.settingsStore = settingsStore
+        self.dockControlService = dockControlService
         self.onStartTapped = onStartTapped
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
-        let frame = Self.barFrame(for: screen, scale: settingsStore.uiScale)
+        let frame = Self.barFrame(
+            for: screen,
+            scale: settingsStore.uiScale,
+            dockControlService: dockControlService
+        )
 
         panel = NSPanel(
             contentRect: frame,
@@ -69,8 +75,23 @@ final class BarWindowController {
             object: nil
         )
 
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let token = workspaceCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.resize() }
+        }
+        workspaceObservers.append(token)
+
         settingsStore.$uiScale
             .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.resize() }
+            .store(in: &cancellables)
+
+        dockControlService.$mode
             .dropFirst()
             .sink { [weak self] _ in self?.resize() }
             .store(in: &cancellables)
@@ -88,17 +109,36 @@ final class BarWindowController {
         resize()
     }
 
-    private func resize() {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        panel.setFrame(Self.barFrame(for: screen, scale: settingsStore.uiScale), display: true)
+    deinit {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for observer in workspaceObservers {
+            workspaceCenter.removeObserver(observer)
+        }
+        NotificationCenter.default.removeObserver(self)
     }
 
-    private static func barFrame(for screen: NSScreen, scale: Double) -> NSRect {
+    private func resize() {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        panel.setFrame(
+            Self.barFrame(
+                for: screen,
+                scale: settingsStore.uiScale,
+                dockControlService: dockControlService
+            ),
+            display: true
+        )
+    }
+
+    private static func barFrame(
+        for screen: NSScreen,
+        scale: Double,
+        dockControlService: DockControlService
+    ) -> NSRect {
         let visible = screen.visibleFrame
-        let height = baseBarHeight * scale
+        let height = BarMetrics.height(for: scale)
         return NSRect(
             x: visible.minX,
-            y: visible.minY,
+            y: dockControlService.barOriginY(for: screen, barHeight: height),
             width: visible.width,
             height: height
         )

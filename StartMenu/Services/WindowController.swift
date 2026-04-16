@@ -5,7 +5,7 @@ import os
 
 @MainActor
 final class WindowController {
-    private let log = Logger(subsystem: "app.pavlenko.startmenu", category: "windows")
+    private let log = Logger(subsystem: AppFlavor.current.logSubsystem, category: "windows")
     private static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
     private static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
     private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString

@@ -16,6 +16,7 @@ final class StartMenuWindowController {
     private let makeRootView: (UUID) -> StartMenuView
     private var presentationID = UUID()
     private var hasMouseEnteredPanel = false
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     private static let hoverDismissDelay: TimeInterval = 0.18
 
@@ -33,6 +34,8 @@ final class StartMenuWindowController {
         appUpdateService: AppUpdateService,
         settingsStore: SettingsStore,
         autostartService: AutostartService,
+        powerUserFeatureFlags: PowerUserFeatureFlags,
+        powerUserDiagnosticsStore: PowerUserDiagnosticsStore,
         onLaunch: @escaping (AppInfo) -> Void,
         onQuit: @escaping () -> Void
     ) {
@@ -62,6 +65,8 @@ final class StartMenuWindowController {
                 appUpdateService: appUpdateService,
                 settingsStore: settingsStore,
                 autostartService: autostartService,
+                powerUserFeatureFlags: powerUserFeatureFlags,
+                powerUserDiagnosticsStore: powerUserDiagnosticsStore,
                 presentationID: presentationID,
                 onHoverChange: { inside in
                     controllerRef.value?.handleHoverChange(inside)
@@ -84,6 +89,23 @@ final class StartMenuWindowController {
             .dropFirst()
             .sink { [weak self] _ in self?.relayout() }
             .store(in: &cancellables)
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let token = workspaceCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.relayout() }
+        }
+        workspaceObservers.append(token)
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -118,6 +140,10 @@ final class StartMenuWindowController {
             return
         }
         panel.setFrame(layoutFrame(for: lastAnchorFrame), display: true)
+    }
+
+    @objc private func screenParametersChanged() {
+        relayout()
     }
 
     /// Positions the panel so it sits flush against the top of the bar and the left edge
@@ -193,5 +219,13 @@ final class StartMenuWindowController {
 
     private final class ControllerRef {
         weak var value: StartMenuWindowController?
+    }
+
+    deinit {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for observer in workspaceObservers {
+            workspaceCenter.removeObserver(observer)
+        }
+        NotificationCenter.default.removeObserver(self)
     }
 }
