@@ -3,6 +3,16 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.21 - 2026-04-17
+
+### English
+- Replaced the custom Trash folder icon in the bar with the native macOS Trash artwork.
+- The Trash button now switches between the empty and full system icons based on the actual contents of the user's Trash.
+
+### Русский
+- Заменили кастомную иконку папки у корзины в баре на нативную системную иконку macOS Trash.
+- Кнопка корзины теперь переключается между системными состояниями пустой и полной корзины по реальному содержимому пользовательской Trash.
+
 ## 0.3.20 - 2026-04-17
 
 ### English

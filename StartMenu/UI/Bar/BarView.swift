@@ -353,6 +353,7 @@ private struct TrashButton: View {
     let scale: Double
 
     @State private var hovering = false
+    @State private var isEmpty = true
 
     private var trashURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -360,11 +361,15 @@ private struct TrashButton: View {
     }
 
     private var icon: NSImage {
-        AppIconService.shared.icon(for: trashURL)
+        let name = isEmpty ? NSImage.trashEmptyName : NSImage.trashFullName
+        let icon = NSImage(named: name) ?? AppIconService.shared.icon(for: trashURL)
+        icon.size = NSSize(width: 64, height: 64)
+        return icon
     }
 
     var body: some View {
         Button {
+            refreshState()
             NSWorkspace.shared.open(trashURL)
         } label: {
             Image(nsImage: icon)
@@ -379,7 +384,37 @@ private struct TrashButton: View {
         }
         .buttonStyle(.plain)
         .help("Trash")
-        .onHover { hovering = $0 }
+        .onHover {
+            hovering = $0
+            if $0 {
+                refreshState()
+            }
+        }
+        .onAppear(perform: refreshState)
+        .onReceive(
+            Timer.publish(every: 4, on: .main, in: .common).autoconnect()
+        ) { _ in
+            refreshState()
+        }
+    }
+
+    private func refreshState() {
+        isEmpty = Self.isTrashEmpty(at: trashURL)
+    }
+
+    private static func isTrashEmpty(at url: URL) -> Bool {
+        let keys: Set<URLResourceKey> = [.isHiddenKey]
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsSubdirectoryDescendants]
+        )) ?? []
+
+        return !contents.contains { item in
+            let values = try? item.resourceValues(forKeys: keys)
+            let isHidden = values?.isHidden ?? false
+            return !isHidden
+        }
     }
 }
 
