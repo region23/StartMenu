@@ -52,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowController: environment.windowController,
             settingsStore: environment.settingsStore,
             dockControlService: environment.dockControlService,
+            onLaunchApp: { [weak self] app in
+                self?.launch(app)
+            },
             onStartTapped: { [weak self] frame in
                 self?.startMenuWindowController?.toggle(anchorFrame: frame)
             }

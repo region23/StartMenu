@@ -6,24 +6,78 @@ struct BarView: View {
     @ObservedObject var menuBarExtrasService: MenuBarExtrasService
     @ObservedObject var settingsStore: SettingsStore
     let windowController: WindowController
+    let onLaunchApp: (AppInfo) -> Void
     let onStartButtonFrame: (NSRect) -> Void
     let onStartButtonTap: () -> Void
 
     private var scale: Double { settingsStore.uiScale }
     private var groups: [WindowGroup] { WindowGroup.group(windowService.windows) }
+    private var groupedByBundleID: [String: WindowGroup] {
+        groups.reduce(into: [:]) { result, group in
+            guard let bundleID = group.ownerBundleID else { return }
+            result[bundleID] = result[bundleID] ?? group
+        }
+    }
+    private var pinnedItems: [PinnedBarItem] {
+        settingsStore.pinnedBundleIDs.map { bundleID in
+            let resolvedApp = AppInfo.resolve(bundleID: bundleID)
+            return PinnedBarItem(
+                bundleID: bundleID,
+                name: groupedByBundleID[bundleID]?.ownerName ?? resolvedApp?.name ?? AppInfo.fallbackName(for: bundleID),
+                appURL: resolvedApp?.url,
+                runningGroup: groupedByBundleID[bundleID]
+            )
+        }
+    }
+    private var unpinnedGroups: [WindowGroup] {
+        groups.filter { group in
+            guard let bundleID = group.ownerBundleID else { return true }
+            return !settingsStore.isPinned(bundleID)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8 * scale) {
             StartButton(scale: scale, onTap: onStartButtonTap, onFrame: onStartButtonFrame)
+
+            if !pinnedItems.isEmpty {
+                PinnedAppsStrip(
+                    items: pinnedItems,
+                    activePID: windowService.activeAppPID,
+                    scale: scale,
+                    onTogglePin: { settingsStore.togglePin($0.bundleID) },
+                    onActivate: { item in
+                        if let window = item.runningGroup?.representative {
+                            windowController.activate(window)
+                            return
+                        }
+                        if let app = item.appInfo {
+                            onLaunchApp(app)
+                        }
+                    },
+                    onActivateWindow: { windowController.activate($0) },
+                    onCloseWindow: { windowController.close($0) },
+                    onMinimizeWindow: { windowController.minimize($0) }
+                )
+            }
+
             Divider().frame(height: 28 * scale).opacity(0.25)
             WindowChipsList(
-                groups: groups,
+                groups: unpinnedGroups,
                 activePID: windowService.activeAppPID,
                 scale: scale,
                 compact: settingsStore.compactChips,
                 onTap: { windowController.activate($0) },
                 onClose: { windowController.close($0) },
-                onMinimize: { windowController.minimize($0) }
+                onMinimize: { windowController.minimize($0) },
+                isPinned: { group in
+                    guard let bundleID = group.ownerBundleID else { return false }
+                    return settingsStore.isPinned(bundleID)
+                },
+                onTogglePin: { group in
+                    guard let bundleID = group.ownerBundleID else { return }
+                    settingsStore.togglePin(bundleID)
+                }
             )
             .layoutPriority(1)
 
@@ -41,6 +95,134 @@ struct BarView: View {
                 .fill(.ultraThinMaterial)
                 .overlay(Color.black.opacity(0.15))
         )
+    }
+}
+
+private struct PinnedBarItem: Identifiable {
+    let bundleID: String
+    let name: String
+    let appURL: URL?
+    let runningGroup: WindowGroup?
+
+    var id: String { bundleID }
+    var appInfo: AppInfo? {
+        guard let appURL else { return nil }
+        return AppInfo(bundleID: bundleID, name: name, url: appURL)
+    }
+}
+
+private struct PinnedAppsStrip: View {
+    let items: [PinnedBarItem]
+    let activePID: pid_t?
+    let scale: Double
+    let onTogglePin: (PinnedBarItem) -> Void
+    let onActivate: (PinnedBarItem) -> Void
+    let onActivateWindow: (WindowInfo) -> Void
+    let onCloseWindow: (WindowInfo) -> Void
+    let onMinimizeWindow: (WindowInfo) -> Void
+
+    private var maxWidth: CGFloat {
+        let chipWidth = CGFloat(42 * scale)
+        let spacing = CGFloat(6 * scale)
+        let count = CGFloat(items.count)
+        let width = count * chipWidth + max(0, count - 1) * spacing
+        return min(width, CGFloat(240 * scale))
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6 * scale) {
+                ForEach(items) { item in
+                    PinnedAppChipView(
+                        item: item,
+                        isActive: item.runningGroup?.id == activePID,
+                        scale: scale,
+                        onTap: { onActivate(item) }
+                    )
+                    .contextMenu {
+                        if let group = item.runningGroup {
+                            if group.windows.count > 1 {
+                                ForEach(group.windows) { win in
+                                    Button(win.displayTitle) { onActivateWindow(win) }
+                                }
+                                Divider()
+                            }
+                            Button("Minimize") { onMinimizeWindow(group.representative) }
+                            Button("Close") { onCloseWindow(group.representative) }
+                            Divider()
+                        } else {
+                            Button("Open") { onActivate(item) }
+                                .disabled(item.appInfo == nil)
+                            Divider()
+                        }
+
+                        Button("Unpin from Bar") { onTogglePin(item) }
+                    }
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(maxWidth: maxWidth)
+    }
+}
+
+private struct PinnedAppChipView: View {
+    let item: PinnedBarItem
+    let isActive: Bool
+    let scale: Double
+    let onTap: () -> Void
+
+    @State private var hovering = false
+
+    private var isRunning: Bool { item.runningGroup != nil }
+    private var icon: NSImage {
+        if let representative = item.runningGroup?.representative,
+           let icon = AppIconService.shared.icon(forPID: representative.ownerPID) {
+            return icon
+        }
+        if let icon = AppIconService.shared.icon(forBundleID: item.bundleID) {
+            return icon
+        }
+        return AppIconService.shared.placeholderIcon()
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 20 * scale, height: 20 * scale)
+                .opacity(isRunning ? 1.0 : 0.72)
+                .frame(width: 38 * scale, height: 36 * scale)
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(background)
+                        if isActive {
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                        }
+                    }
+                )
+                .overlay(alignment: .bottom) {
+                    if isRunning {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(isActive ? Color.accentColor : Color.white.opacity(0.35))
+                            .frame(height: 2)
+                            .padding(.horizontal, 5 * scale)
+                            .offset(y: 4 * scale)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .help(item.name)
+        .onHover { hovering = $0 }
+    }
+
+    private var background: Color {
+        if isActive { return Color.white.opacity(0.22) }
+        if hovering { return Color.white.opacity(0.18) }
+        return Color.white.opacity(0.08)
     }
 }
 
@@ -131,6 +313,8 @@ private struct WindowChipsList: View {
     let onTap: (WindowInfo) -> Void
     let onClose: (WindowInfo) -> Void
     let onMinimize: (WindowInfo) -> Void
+    let isPinned: (WindowGroup) -> Bool
+    let onTogglePin: (WindowGroup) -> Void
 
     @State private var hoveredChipID: pid_t?
     @State private var popoverGroupID: pid_t?
@@ -190,6 +374,12 @@ private struct WindowChipsList: View {
                             }
                             Button("Minimize") { onMinimize(group.representative) }
                             Button("Close") { onClose(group.representative) }
+                            if group.ownerBundleID != nil {
+                                Divider()
+                                Button(isPinned(group) ? "Unpin from Bar" : "Pin to Bar") {
+                                    onTogglePin(group)
+                                }
+                            }
                         }
                         .popover(
                             isPresented: hoverPopoverBinding(for: group),

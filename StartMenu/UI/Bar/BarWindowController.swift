@@ -10,6 +10,7 @@ final class BarWindowController {
     private let windowController: WindowController
     private let settingsStore: SettingsStore
     private let dockControlService: DockControlService
+    private let onLaunchApp: (AppInfo) -> Void
     private let onStartTapped: (NSRect) -> Void
 
     private var lastStartFrame: NSRect = .zero
@@ -22,6 +23,7 @@ final class BarWindowController {
         windowController: WindowController,
         settingsStore: SettingsStore,
         dockControlService: DockControlService,
+        onLaunchApp: @escaping (AppInfo) -> Void,
         onStartTapped: @escaping (NSRect) -> Void
     ) {
         self.windowService = windowService
@@ -29,6 +31,7 @@ final class BarWindowController {
         self.windowController = windowController
         self.settingsStore = settingsStore
         self.dockControlService = dockControlService
+        self.onLaunchApp = onLaunchApp
         self.onStartTapped = onStartTapped
 
         let screen = NSScreen.main ?? NSScreen.screens.first!
@@ -58,6 +61,7 @@ final class BarWindowController {
             menuBarExtrasService: menuBarExtrasService,
             settingsStore: settingsStore,
             windowController: windowController,
+            onLaunchApp: onLaunchApp,
             onStartButtonFrame: { [weak self] in self?.lastStartFrame = $0 },
             onStartButtonTap: { [weak self] in
                 guard let self else { return }
