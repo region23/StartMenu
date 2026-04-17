@@ -17,7 +17,7 @@ final class OnboardingWindowController {
         window.isReleasedWhenClosed = false
 
         let ref = WeakRef()
-        let hosting = NSHostingView(rootView: OnboardingView(
+        let hosting = CursorHostingView(rootView: OnboardingView(
             permissionsService: permissionsService,
             onDismiss: { ref.value?.close() }
         ))

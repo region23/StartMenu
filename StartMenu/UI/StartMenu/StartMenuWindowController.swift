@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class StartMenuWindowController {
     private let panel: KeyablePanel
-    private let hosting: NSHostingView<StartMenuView>
+    private let hosting: CursorHostingView<StartMenuView>
     private let settingsStore: SettingsStore
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
@@ -79,7 +79,7 @@ final class StartMenuWindowController {
                 onQuit: onQuit
             )
         }
-        hosting = NSHostingView(rootView: makeRootView(presentationID))
+        hosting = CursorHostingView(rootView: makeRootView(presentationID))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = hosting
         controllerRef.value = self

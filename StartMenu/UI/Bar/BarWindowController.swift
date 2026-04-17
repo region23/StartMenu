@@ -64,7 +64,7 @@ final class BarWindowController {
                 self.onStartTapped(self.lastStartFrame)
             }
         )
-        let hosting = NSHostingView(rootView: view)
+        let hosting = CursorHostingView(rootView: view)
         hosting.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = hosting
 
