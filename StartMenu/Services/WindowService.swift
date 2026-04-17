@@ -408,6 +408,11 @@ final class WindowService: ObservableObject {
         let documentPath: String?
     }
 
+    private struct AXWindowCandidate {
+        let details: AXWindowDetails
+        let frame: CGRect?
+    }
+
     private struct ResolvedWindowLabel {
         let title: String
         let subtitle: String?
@@ -684,20 +689,112 @@ final class WindowService: ObservableObject {
         return unsafeBitCast(window, to: AXUIElement.self)
     }
 
-    private nonisolated static func copyAXWindowDetailsByID(for pid: pid_t) -> [CGWindowID: AXWindowDetails] {
+    private nonisolated static func copyAXPoint(_ element: AXUIElement, attribute: CFString) -> CGPoint? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
+              let value = valueRef else { return nil }
+        var point = CGPoint.zero
+        guard AXValueGetValue(value as! AXValue, .cgPoint, &point) else { return nil }
+        return point
+    }
+
+    private nonisolated static func copyAXSize(_ element: AXUIElement, attribute: CFString) -> CGSize? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
+              let value = valueRef else { return nil }
+        var size = CGSize.zero
+        guard AXValueGetValue(value as! AXValue, .cgSize, &size) else { return nil }
+        return size
+    }
+
+    private nonisolated static func copyAXFrame(_ element: AXUIElement) -> CGRect? {
+        guard
+            let position = copyAXPoint(element, attribute: kAXPositionAttribute as CFString),
+            let size = copyAXSize(element, attribute: kAXSizeAttribute as CFString)
+        else {
+            return nil
+        }
+        return CGRect(origin: position, size: size)
+    }
+
+    private nonisolated static func frameDistance(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        abs(lhs.minX - rhs.minX)
+            + abs(lhs.minY - rhs.minY)
+            + abs(lhs.width - rhs.width)
+            + abs(lhs.height - rhs.height)
+    }
+
+    private nonisolated static func framesApproximatelyMatch(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        frameDistance(lhs, rhs) <= 24
+    }
+
+    private nonisolated static func copyAXWindowDetailsByID(
+        for pid: pid_t,
+        matching snapshots: [OnscreenWindowSnapshot]
+    ) -> [CGWindowID: AXWindowDetails] {
         let appElement = AXUIElementCreateApplication(pid)
         let axWindows = copyAXWindows(for: appElement)
         guard !axWindows.isEmpty else { return [:] }
 
         var result: [CGWindowID: AXWindowDetails] = [:]
+        var unmatchedSnapshots = snapshots
+        var fallbackCandidates: [AXWindowCandidate] = []
+
         for ax in axWindows {
-            var wid: CGWindowID = 0
-            guard _AXUIElementGetWindow(ax, &wid) == .success, wid != 0 else { continue }
-            result[wid] = AXWindowDetails(
+            let details = AXWindowDetails(
                 title: copyAXString(ax, attribute: kAXTitleAttribute as CFString),
                 documentPath: parseDocumentPath(copyAXString(ax, attribute: Self.axDocumentAttribute))
             )
+            var wid: CGWindowID = 0
+            if _AXUIElementGetWindow(ax, &wid) == .success, wid != 0 {
+                result[wid] = details
+                unmatchedSnapshots.removeAll { $0.id == wid }
+                continue
+            }
+
+            guard !details.title.isEmpty || details.documentPath != nil else { continue }
+            fallbackCandidates.append(
+                AXWindowCandidate(
+                    details: details,
+                    frame: copyAXFrame(ax)
+                )
+            )
         }
+
+        guard !fallbackCandidates.isEmpty, !unmatchedSnapshots.isEmpty else {
+            return result
+        }
+
+        var remainingCandidates = fallbackCandidates
+        for snapshot in unmatchedSnapshots {
+            guard let candidateIndex = remainingCandidates.indices
+                .filter({
+                    guard let frame = remainingCandidates[$0].frame else { return false }
+                    return framesApproximatelyMatch(frame, snapshot.bounds)
+                })
+                .min(by: { lhs, rhs in
+                    guard
+                        let lhsFrame = remainingCandidates[lhs].frame,
+                        let rhsFrame = remainingCandidates[rhs].frame
+                    else {
+                        return lhs < rhs
+                    }
+                    return frameDistance(lhsFrame, snapshot.bounds) < frameDistance(rhsFrame, snapshot.bounds)
+                })
+            else {
+                continue
+            }
+
+            result[snapshot.id] = remainingCandidates.remove(at: candidateIndex).details
+        }
+
+        if result.count < snapshots.count,
+           let onlySnapshot = unmatchedSnapshots.first(where: { result[$0.id] == nil }),
+           unmatchedSnapshots.filter({ result[$0.id] == nil }).count == 1,
+           remainingCandidates.count == 1 {
+            result[onlySnapshot.id] = remainingCandidates[0].details
+        }
+
         return result
     }
 
@@ -774,7 +871,10 @@ final class WindowService: ObservableObject {
 
         var axDetailsByWindowID: [CGWindowID: AXWindowDetails] = [:]
         for pid in pidsNeedingAXTitles {
-            axDetailsByWindowID.merge(copyAXWindowDetailsByID(for: pid)) { current, _ in current }
+            let snapshotsForPID = snapshots.filter { $0.ownerPID == pid }
+            axDetailsByWindowID.merge(
+                copyAXWindowDetailsByID(for: pid, matching: snapshotsForPID)
+            ) { current, _ in current }
         }
 
         let windows = snapshots.map { snapshot in

@@ -3,6 +3,16 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.26 - 2026-04-17
+
+### English
+- Fixed VS Code window titles in the bar hover popup: when multiple Code windows are open, the popup now preserves the project or folder names instead of showing every row as just `Code`.
+- Added a geometry-based Accessibility fallback in `WindowService` so AX window titles can still be matched back to CG windows when Electron apps do not expose a direct `CGWindowID` bridge.
+
+### Русский
+- Исправили заголовки окон VS Code во всплывающем popup бара: если открыто несколько окон Code, popup теперь показывает названия проектов и папок, а не две одинаковые строки `Code`.
+- Добавили geometry-based fallback в `WindowService`: теперь AX-заголовки можно сопоставить с CG-окнами даже в тех случаях, когда Electron-приложение не отдаёт прямую привязку к `CGWindowID`.
+
 ## 0.3.25 - 2026-04-17
 
 ### English
