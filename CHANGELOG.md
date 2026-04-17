@@ -3,6 +3,18 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.25 - 2026-04-17
+
+### English
+- Fixed the severe performance regression that appeared after `0.3.22`: timer refreshes no longer re-query the full running-app list on every tick, and the Menu Bar Items scanner no longer performs background Accessibility polling while idle.
+- Reduced bar and Start Menu hitching by reusing the performance trace file handle, throttling background refresh work during live interactions, and avoiding redundant cursor-rect invalidation during chip animations.
+- Cut window constrainer overhead by passing the current regular app PID list directly from `WindowService` instead of rescanning `NSWorkspace` inside every constraint refresh.
+
+### Русский
+- Исправили тяжёлую performance-регрессию, появившуюся после `0.3.22`: timer-refresh больше не перечитывает полный список запущенных приложений на каждом тике, а сканер Menu Bar Items больше не делает фоновый Accessibility polling в простое.
+- Уменьшили лаги бара и Start Menu: trace-лог теперь пишет через переиспользуемый file handle, фоновый refresh сильнее прижимается во время живых взаимодействий, а у анимаций чипсов убрали лишнюю инвалидизацию cursor rects.
+- Снизили стоимость window constrainer: `WindowService` теперь передаёт в него актуальный список regular PID'ов напрямую, без повторного сканирования `NSWorkspace` на каждом constraint-refresh.
+
 ## 0.3.24 - 2026-04-17
 
 ### English

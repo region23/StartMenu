@@ -10,6 +10,7 @@ final class BarWindowController {
     private let windowController: WindowController
     private let settingsStore: SettingsStore
     private let dockControlService: DockControlService
+    private let onInteractionChanged: (Bool) -> Void
     private let onLaunchApp: (AppInfo) -> Void
     private let onStartTapped: (NSRect) -> Void
 
@@ -23,6 +24,7 @@ final class BarWindowController {
         windowController: WindowController,
         settingsStore: SettingsStore,
         dockControlService: DockControlService,
+        onInteractionChanged: @escaping (Bool) -> Void,
         onLaunchApp: @escaping (AppInfo) -> Void,
         onStartTapped: @escaping (NSRect) -> Void
     ) {
@@ -31,6 +33,7 @@ final class BarWindowController {
         self.windowController = windowController
         self.settingsStore = settingsStore
         self.dockControlService = dockControlService
+        self.onInteractionChanged = onInteractionChanged
         self.onLaunchApp = onLaunchApp
         self.onStartTapped = onStartTapped
 
@@ -62,6 +65,7 @@ final class BarWindowController {
             settingsStore: settingsStore,
             windowController: windowController,
             onLaunchApp: onLaunchApp,
+            onInteractionChanged: onInteractionChanged,
             onStartButtonFrame: { [weak self] in self?.lastStartFrame = $0 },
             onStartButtonTap: { [weak self] in
                 guard let self else { return }

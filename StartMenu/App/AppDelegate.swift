@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var barWindowController: BarWindowController?
     private var startMenuWindowController: StartMenuWindowController?
     private var onboardingWindowController: OnboardingWindowController?
+    private var responsivenessActivity: NSObjectProtocol?
     private let hotkeyService = HotkeyService()
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var sigtermSource: DispatchSourceSignal?
@@ -24,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         NSApp.setActivationPolicy(.accessory)
         mainThreadStallMonitor.start()
+        beginResponsivenessActivity()
 
         // Cocoa doesn't handle SIGTERM/SIGINT by default — the process just
         // dies and applicationWillTerminate never runs, leaving the Dock in
@@ -45,6 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             autostartService: environment.autostartService,
             powerUserFeatureFlags: environment.powerUserFeatureFlags,
             powerUserDiagnosticsStore: environment.powerUserDiagnosticsStore,
+            onVisibilityChanged: { [weak self] isVisible in
+                self?.environment.windowService.setInteractionActive(
+                    isVisible,
+                    source: "start_menu"
+                )
+            },
             onLaunch: { [weak self] app in
                 self?.launch(app)
             },
@@ -60,6 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowController: environment.windowController,
             settingsStore: environment.settingsStore,
             dockControlService: environment.dockControlService,
+            onInteractionChanged: { [weak self] isInteracting in
+                self?.environment.windowService.setInteractionActive(
+                    isInteracting,
+                    source: "bar_hover"
+                )
+            },
             onLaunchApp: { [weak self] app in
                 self?.launch(app)
             },
@@ -168,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         mainThreadStallMonitor.stop()
+        endResponsivenessActivity()
         PerformanceDiagnostics.recordEvent(
             "application_will_terminate",
             category: "lifecycle",
@@ -232,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
         src.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
+                self?.endResponsivenessActivity()
                 if self?.environment.dockControlService.hasManagedDockState == true {
                     self?.environment.dockControlService.restore()
                 }
@@ -240,6 +256,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         src.resume()
         holder = src
+    }
+
+    private func beginResponsivenessActivity() {
+        guard responsivenessActivity == nil else { return }
+        responsivenessActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "Keep StartMenu responsive while the bar is active"
+        )
+    }
+
+    private func endResponsivenessActivity() {
+        guard let responsivenessActivity else { return }
+        ProcessInfo.processInfo.endActivity(responsivenessActivity)
+        self.responsivenessActivity = nil
     }
 
     @objc private func screenParametersChanged() {

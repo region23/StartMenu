@@ -6,8 +6,13 @@ import Foundation
 
 @MainActor
 final class WindowService: ObservableObject {
-    private nonisolated static let refreshInterval: TimeInterval = 0.2
-    private nonisolated static let constraintRefreshInterval: TimeInterval = 0.35
+    private nonisolated static let refreshInterval: TimeInterval = 0.35
+    private nonisolated static let constraintRefreshInterval: TimeInterval = 0.5
+    private nonisolated static let interactiveRefreshInterval: TimeInterval = 1.0
+    private nonisolated static let deepAXRefreshInterval: TimeInterval = 2.5
+    private nonisolated static let minimizedRefreshInterval: TimeInterval = 2.0
+    private nonisolated static let minimizedRefreshWhenEmptyInterval: TimeInterval = 6.0
+    private nonisolated static let runningAppSnapshotRefreshInterval: TimeInterval = 15.0
     private nonisolated static let axDocumentAttribute = "AXDocument" as CFString
     private nonisolated static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
     private nonisolated static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
@@ -24,9 +29,17 @@ final class WindowService: ObservableObject {
     private let windowConstrainer: any WindowConstraining
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var refreshTask: Task<Void, Never>?
+    private var isRefreshing = false
     private var pendingRefreshReasons: Set<String> = []
     private var lastConstraintRefreshAt: CFAbsoluteTime = 0
+    private var lastDeepAXRefreshAt: CFAbsoluteTime = 0
+    private var lastMinimizedRefreshAt: CFAbsoluteTime = 0
+    private var lastRunningAppSnapshotRefreshAt: CFAbsoluteTime = 0
+    private var lastInteractiveTimerRefreshAt: CFAbsoluteTime = 0
+    private var cachedWindowPresentation: [CGWindowID: CachedWindowPresentation] = [:]
+    private var cachedMinimizedWindows: [WindowInfo] = []
+    private var runningAppSnapshots: [RunningAppSnapshot] = []
+    private var activeInteractionSources: Set<String> = []
 
     private nonisolated static let excludedOwnerNames: Set<String> = [
         "Dock",
@@ -47,6 +60,8 @@ final class WindowService: ObservableObject {
     init(windowConstrainer: any WindowConstraining) {
         self.windowConstrainer = windowConstrainer
         activeAppPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        runningAppSnapshots = Self.captureRunningAppSnapshots()
+        lastRunningAppSnapshotRefreshAt = CFAbsoluteTimeGetCurrent()
         refresh(reason: "startup")
         start()
         observeFrontmost()
@@ -54,7 +69,6 @@ final class WindowService: ObservableObject {
 
     deinit {
         timer?.invalidate()
-        refreshTask?.cancel()
         let center = NSWorkspace.shared.notificationCenter
         for obs in workspaceObservers {
             center.removeObserver(obs)
@@ -112,14 +126,57 @@ final class WindowService: ObservableObject {
         timer = nil
     }
 
-    func refresh(reason: String = "manual") {
-        let runningApps = Self.captureRunningAppSnapshots()
-        let activePID = activeAppPID ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+    func setInteractionActive(_ isActive: Bool, source: String) {
+        let didChange: Bool
+        if isActive {
+            didChange = activeInteractionSources.insert(source).inserted
+        } else {
+            didChange = activeInteractionSources.remove(source) != nil
+        }
 
-        guard refreshTask == nil else {
+        guard didChange else { return }
+
+        PerformanceDiagnostics.recordEvent(
+            isActive ? "interactive_surface_activated" : "interactive_surface_deactivated",
+            category: "window_service",
+            fields: [
+                "source": source,
+                "activeSources": activeInteractionSources.sorted().joined(separator: ",")
+            ]
+        )
+
+        if activeInteractionSources.isEmpty {
+            lastInteractiveTimerRefreshAt = 0
+            refresh(reason: "interactive_surface.released[\(source)]")
+        }
+    }
+
+    func refresh(reason: String = "manual") {
+        guard !isRefreshing else {
             pendingRefreshReasons.insert(reason)
             return
         }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        if shouldSkipTimerRefresh(reason: reason, now: now) {
+            return
+        }
+        let refreshedRunningApps = shouldRefreshRunningAppSnapshots(reason: reason, now: now)
+        if refreshedRunningApps {
+            runningAppSnapshots = Self.captureRunningAppSnapshots()
+            lastRunningAppSnapshotRefreshAt = now
+        }
+        let runningApps = runningAppSnapshots
+        let regularAppPIDs = runningApps.filter(\.isRegular).map(\.pid)
+        let activePID = activeAppPID ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let performDeepAXRefresh = shouldPerformDeepAXRefresh(reason: reason, now: now)
+        let cachedPresentation = cachedWindowPresentation
+        let cachedMinimized = cachedMinimizedWindows
+        let performMinimizedRefresh = shouldPerformMinimizedRefresh(
+            reason: reason,
+            now: now,
+            hasCachedMinimizedWindows: !cachedMinimized.isEmpty
+        )
 
         let cycleSpan = PerformanceDiagnostics.begin(
             category: "window_service",
@@ -127,78 +184,143 @@ final class WindowService: ObservableObject {
             thresholdMs: 24,
             fields: [
                 "reason": reason,
-                "runningApps": String(runningApps.count)
+                "runningApps": String(runningApps.count),
+                "runningAppsSource": refreshedRunningApps ? "live" : "cache",
+                "deepAX": String(performDeepAXRefresh),
+                "minimizedScan": String(performMinimizedRefresh)
             ]
         )
 
-        refreshTask = Task { [weak self] in
-            let snapshotSpan = PerformanceDiagnostics.begin(
-                category: "window_service",
-                name: "refresh_snapshot_build",
-                thresholdMs: 16,
-                fields: [
-                    "reason": reason,
-                    "runningApps": String(runningApps.count)
-                ]
-            )
+        let snapshotSpan = PerformanceDiagnostics.begin(
+            category: "window_service",
+            name: "refresh_snapshot_build",
+            thresholdMs: 16,
+            fields: [
+                "reason": reason,
+                "runningApps": String(runningApps.count),
+                "runningAppsSource": refreshedRunningApps ? "live" : "cache",
+                "deepAX": String(performDeepAXRefresh),
+                "minimizedScan": String(performMinimizedRefresh)
+            ]
+        )
 
-            let snapshot = await Task.detached(priority: .userInitiated) {
-                Self.buildRefreshSnapshot(
-                    runningApps: runningApps,
-                    activeAppPID: activePID
-                )
-            }.value
-
-            snapshotSpan.end(extraFields: snapshot.metrics.fields)
-
-            await MainActor.run {
-                guard let self else { return }
-
-                let didWindowsChange = snapshot.windows != self.windows
-
-                if snapshot.activeAppPID != self.activeAppPID {
-                    self.activeAppPID = snapshot.activeAppPID
-                }
-
-                if didWindowsChange {
-                    self.windows = snapshot.windows
-                    PerformanceDiagnostics.recordEvent(
-                        "window_snapshot_changed",
-                        category: "window_service",
-                        fields: snapshot.metrics.fields.merging(
-                            [
-                                "reason": reason,
-                                "windows": String(snapshot.windows.count)
-                            ]
-                        ) { _, new in new }
-                    )
-                }
-
-                self.updateBarVisibility()
-                self.refreshWindowConstraintsIfNeeded(
-                    reason: reason,
-                    force: didWindowsChange || reason != "timer"
-                )
-
-                cycleSpan.end(
-                    extraFields: snapshot.metrics.fields.merging(
-                        [
-                            "reason": reason,
-                            "changed": String(didWindowsChange),
-                            "windows": String(snapshot.windows.count)
-                        ]
-                    ) { _, new in new }
-                )
-
-                self.refreshTask = nil
-
-                if !self.pendingRefreshReasons.isEmpty {
-                    let nextReason = self.coalescedReasonSummary()
-                    self.pendingRefreshReasons.removeAll()
-                    self.refresh(reason: nextReason)
-                }
+        isRefreshing = true
+        var followUpReason: String?
+        defer {
+            isRefreshing = false
+            if let followUpReason {
+                refresh(reason: followUpReason)
             }
         }
+
+        let snapshot = Self.buildRefreshSnapshot(
+            runningApps: runningApps,
+            activeAppPID: activePID,
+            cachedWindowPresentation: cachedPresentation,
+            cachedMinimizedWindows: cachedMinimized,
+            performDeepAXRefresh: performDeepAXRefresh,
+            performMinimizedRefresh: performMinimizedRefresh
+        )
+
+        snapshotSpan.end(extraFields: snapshot.metrics.fields)
+
+        let didWindowsChange = snapshot.windows != windows
+
+        if snapshot.activeAppPID != activeAppPID {
+            activeAppPID = snapshot.activeAppPID
+        }
+
+        cachedWindowPresentation = snapshot.windowPresentationCache
+        cachedMinimizedWindows = snapshot.minimizedWindows
+        if performDeepAXRefresh {
+            lastDeepAXRefreshAt = now
+        }
+        if performMinimizedRefresh {
+            lastMinimizedRefreshAt = now
+        }
+
+        if didWindowsChange {
+            windows = snapshot.windows
+            PerformanceDiagnostics.recordEvent(
+                "window_snapshot_changed",
+                category: "window_service",
+                fields: snapshot.metrics.fields.merging(
+                    [
+                        "reason": reason,
+                        "windows": String(snapshot.windows.count)
+                    ]
+                ) { _, new in new }
+            )
+        }
+
+        updateBarVisibility()
+        refreshWindowConstraintsIfNeeded(
+            reason: reason,
+            force: didWindowsChange || reason != "timer",
+            regularAppPIDs: regularAppPIDs
+        )
+
+        cycleSpan.end(
+            extraFields: snapshot.metrics.fields.merging(
+                [
+                    "reason": reason,
+                    "changed": String(didWindowsChange),
+                    "windows": String(snapshot.windows.count)
+                ]
+            ) { _, new in new }
+        )
+
+        if !pendingRefreshReasons.isEmpty {
+            followUpReason = coalescedReasonSummary()
+            pendingRefreshReasons.removeAll()
+        }
+    }
+
+    private func shouldPerformDeepAXRefresh(reason: String, now: CFAbsoluteTime) -> Bool {
+        if !isTimerOnlyReason(reason) {
+            return true
+        }
+        return now - lastDeepAXRefreshAt >= Self.deepAXRefreshInterval
+    }
+
+    private func shouldPerformMinimizedRefresh(
+        reason: String,
+        now: CFAbsoluteTime,
+        hasCachedMinimizedWindows: Bool
+    ) -> Bool {
+        if !isTimerOnlyReason(reason) {
+            return true
+        }
+        let interval = hasCachedMinimizedWindows
+            ? Self.minimizedRefreshInterval
+            : Self.minimizedRefreshWhenEmptyInterval
+        return now - lastMinimizedRefreshAt >= interval
+    }
+
+    private func shouldRefreshRunningAppSnapshots(reason: String, now: CFAbsoluteTime) -> Bool {
+        if runningAppSnapshots.isEmpty { return true }
+        if reason == "startup" { return true }
+        if reason.contains("DidLaunchApplication") || reason.contains("DidTerminateApplication") {
+            return true
+        }
+        return now - lastRunningAppSnapshotRefreshAt >= Self.runningAppSnapshotRefreshInterval
+    }
+
+    private func shouldSkipTimerRefresh(reason: String, now: CFAbsoluteTime) -> Bool {
+        guard !activeInteractionSources.isEmpty, isTimerOnlyReason(reason) else {
+            return false
+        }
+        guard now - lastInteractiveTimerRefreshAt >= Self.interactiveRefreshInterval else {
+            return true
+        }
+        lastInteractiveTimerRefreshAt = now
+        return false
+    }
+
+    private func isTimerOnlyReason(_ reason: String) -> Bool {
+        if reason == "timer" { return true }
+        if reason == "coalesced[timer]" { return true }
+        return reason.hasPrefix("coalesced[timer,")
     }
 
     private func coalescedReasonSummary() -> String {
@@ -209,7 +331,11 @@ final class WindowService: ObservableObject {
         return "coalesced[\(prefix)\(suffix)]"
     }
 
-    private func refreshWindowConstraintsIfNeeded(reason: String, force: Bool) {
+    private func refreshWindowConstraintsIfNeeded(
+        reason: String,
+        force: Bool,
+        regularAppPIDs: [pid_t]
+    ) {
         let now = CFAbsoluteTimeGetCurrent()
         guard force || now - lastConstraintRefreshAt >= Self.constraintRefreshInterval else {
             return
@@ -222,7 +348,7 @@ final class WindowService: ObservableObject {
             thresholdMs: 18,
             fields: ["reason": reason]
         )
-        windowConstrainer.refresh(barWindow: barWindow)
+        windowConstrainer.refresh(barWindow: barWindow, regularAppPIDs: regularAppPIDs)
         span.end()
     }
 
@@ -239,6 +365,10 @@ final class WindowService: ObservableObject {
         let minimizedCount: Int
         let placeholderCount: Int
         let axLookupPIDCount: Int
+        let onscreenDurationMs: Double
+        let minimizedDurationMs: Double
+        let placeholderDurationMs: Double
+        let sortDurationMs: Double
 
         var fields: [String: String] {
             [
@@ -246,8 +376,16 @@ final class WindowService: ObservableObject {
                 "onscreen": String(onscreenCount),
                 "minimized": String(minimizedCount),
                 "placeholders": String(placeholderCount),
-                "axLookupPIDs": String(axLookupPIDCount)
+                "axLookupPIDs": String(axLookupPIDCount),
+                "onscreenMs": Self.format(durationMs: onscreenDurationMs),
+                "minimizedMs": Self.format(durationMs: minimizedDurationMs),
+                "placeholdersMs": Self.format(durationMs: placeholderDurationMs),
+                "sortMs": Self.format(durationMs: sortDurationMs)
             ]
+        }
+
+        private static func format(durationMs: Double) -> String {
+            String(format: "%.1f", durationMs)
         }
     }
 
@@ -255,6 +393,14 @@ final class WindowService: ObservableObject {
         let activeAppPID: pid_t?
         let windows: [WindowInfo]
         let metrics: RefreshMetrics
+        let minimizedWindows: [WindowInfo]
+        let windowPresentationCache: [CGWindowID: CachedWindowPresentation]
+    }
+
+    private struct CachedWindowPresentation: Sendable {
+        let title: String
+        let label: String
+        let subtitle: String?
     }
 
     private struct AXWindowDetails {
@@ -290,24 +436,48 @@ final class WindowService: ObservableObject {
 
     private nonisolated static func buildRefreshSnapshot(
         runningApps: [RunningAppSnapshot],
-        activeAppPID: pid_t?
+        activeAppPID: pid_t?,
+        cachedWindowPresentation: [CGWindowID: CachedWindowPresentation],
+        cachedMinimizedWindows: [WindowInfo],
+        performDeepAXRefresh: Bool,
+        performMinimizedRefresh: Bool
     ) -> RefreshSnapshot {
-        let onscreenResult = collectOnscreenWindows(runningApps: runningApps)
-        let onscreen = onscreenResult.windows
-        let minimized = collectMinimizedWindows(
+        let onscreenStartedAt = CFAbsoluteTimeGetCurrent()
+        let onscreenResult = collectOnscreenWindows(
             runningApps: runningApps,
-            excludingIDs: Set(onscreen.map(\.id))
+            cachedWindowPresentation: cachedWindowPresentation,
+            performDeepAXRefresh: performDeepAXRefresh
         )
+        let onscreenDurationMs = (CFAbsoluteTimeGetCurrent() - onscreenStartedAt) * 1_000
+        let onscreen = onscreenResult.windows
+
+        let minimized: [WindowInfo]
+        let minimizedStartedAt = CFAbsoluteTimeGetCurrent()
+        if performMinimizedRefresh {
+            minimized = collectMinimizedWindows(
+                runningApps: runningApps,
+                excludingIDs: Set(onscreen.map(\.id))
+            )
+        } else {
+            let excludedIDs = Set(onscreen.map(\.id))
+            minimized = cachedMinimizedWindows.filter { !excludedIDs.contains($0.id) }
+        }
+        let minimizedDurationMs = (CFAbsoluteTimeGetCurrent() - minimizedStartedAt) * 1_000
+
+        let placeholdersStartedAt = CFAbsoluteTimeGetCurrent()
         let placeholders = placeholdersForInvisibleApps(
             runningApps: runningApps,
             existingPIDs: Set((onscreen + minimized).map(\.ownerPID))
         )
+        let placeholderDurationMs = (CFAbsoluteTimeGetCurrent() - placeholdersStartedAt) * 1_000
         let combined = onscreen + minimized + placeholders
 
+        let sortStartedAt = CFAbsoluteTimeGetCurrent()
         let sorted = combined.sorted {
             if $0.ownerName == $1.ownerName { return $0.id < $1.id }
             return $0.ownerName.localizedCaseInsensitiveCompare($1.ownerName) == .orderedAscending
         }
+        let sortDurationMs = (CFAbsoluteTimeGetCurrent() - sortStartedAt) * 1_000
 
         return RefreshSnapshot(
             activeAppPID: activeAppPID,
@@ -317,9 +487,30 @@ final class WindowService: ObservableObject {
                 onscreenCount: onscreen.count,
                 minimizedCount: minimized.count,
                 placeholderCount: placeholders.count,
-                axLookupPIDCount: onscreenResult.axLookupPIDCount
-            )
+                axLookupPIDCount: onscreenResult.axLookupPIDCount,
+                onscreenDurationMs: onscreenDurationMs,
+                minimizedDurationMs: minimizedDurationMs,
+                placeholderDurationMs: placeholderDurationMs,
+                sortDurationMs: sortDurationMs
+            ),
+            minimizedWindows: minimized,
+            windowPresentationCache: makeWindowPresentationCache(from: sorted)
         )
+    }
+
+    private nonisolated static func makeWindowPresentationCache(
+        from windows: [WindowInfo]
+    ) -> [CGWindowID: CachedWindowPresentation] {
+        Dictionary(uniqueKeysWithValues: windows.map { window in
+            (
+                window.id,
+                CachedWindowPresentation(
+                    title: window.title,
+                    label: window.label,
+                    subtitle: window.subtitle
+                )
+            )
+        })
     }
 
     /// For every running `.regular` application that wasn't picked up
@@ -513,7 +704,9 @@ final class WindowService: ObservableObject {
     // MARK: - Onscreen
 
     private nonisolated static func collectOnscreenWindows(
-        runningApps: [RunningAppSnapshot]
+        runningApps: [RunningAppSnapshot],
+        cachedWindowPresentation: [CGWindowID: CachedWindowPresentation],
+        performDeepAXRefresh: Bool
     ) -> (windows: [WindowInfo], axLookupPIDCount: Int) {
         let ours = ProcessInfo.processInfo.processIdentifier
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
@@ -566,14 +759,18 @@ final class WindowService: ObservableObject {
             )
         }
 
-        let pidsNeedingAXTitles = Set(
-            snapshots
-                .filter {
-                    let cgTitle = $0.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return cgTitle.isEmpty || cgTitle == $0.ownerName
-                }
-                .map(\.ownerPID)
-        )
+        var pidsNeedingAXTitles = Set<pid_t>()
+        if performDeepAXRefresh {
+            pidsNeedingAXTitles = Set(
+                snapshots
+                    .filter {
+                        let cgTitle = $0.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard cgTitle.isEmpty || cgTitle == $0.ownerName else { return false }
+                        return cachedWindowPresentation[$0.id] == nil
+                    }
+                    .map(\.ownerPID)
+            )
+        }
 
         var axDetailsByWindowID: [CGWindowID: AXWindowDetails] = [:]
         for pid in pidsNeedingAXTitles {
@@ -581,17 +778,40 @@ final class WindowService: ObservableObject {
         }
 
         let windows = snapshots.map { snapshot in
+            let cachedPresentation = cachedWindowPresentation[snapshot.id]
             let axDetails = axDetailsByWindowID[snapshot.id]
             let axTitle = axDetails?.title ?? ""
-            let rawTitle = axTitle.isEmpty
-                ? snapshot.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                : axTitle
-            let resolved = resolveWindowLabel(
-                ownerName: snapshot.ownerName,
-                cgTitle: snapshot.cgTitle,
-                axTitle: axTitle,
-                documentPath: axDetails?.documentPath
-            )
+            let rawTitle: String
+            let resolved: ResolvedWindowLabel
+            if let axDetails {
+                rawTitle = axTitle.isEmpty
+                    ? snapshot.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    : axTitle
+                resolved = resolveWindowLabel(
+                    ownerName: snapshot.ownerName,
+                    cgTitle: snapshot.cgTitle,
+                    axTitle: axTitle,
+                    documentPath: axDetails.documentPath
+                )
+            } else if let cachedPresentation,
+                      (
+                        snapshot.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || snapshot.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines) == snapshot.ownerName
+                      ) {
+                rawTitle = cachedPresentation.title
+                resolved = ResolvedWindowLabel(
+                    title: cachedPresentation.label,
+                    subtitle: cachedPresentation.subtitle
+                )
+            } else {
+                rawTitle = snapshot.cgTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                resolved = resolveWindowLabel(
+                    ownerName: snapshot.ownerName,
+                    cgTitle: snapshot.cgTitle,
+                    axTitle: "",
+                    documentPath: nil
+                )
+            }
 
             return WindowInfo(
                 id: snapshot.id,

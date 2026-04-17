@@ -14,7 +14,7 @@ struct DisplayMetricsSnapshot: Equatable, Sendable {
 protocol WindowConstraining {
     var diagnosticsName: String { get }
 
-    func refresh(barWindow: NSWindow?)
+    func refresh(barWindow: NSWindow?, regularAppPIDs: [pid_t])
     func shouldHideBar(for barWindow: NSWindow) -> Bool
     func metrics(for barWindow: NSWindow?) -> DisplayMetricsSnapshot?
 }
@@ -33,7 +33,7 @@ final class AXWindowConstrainer: WindowConstraining {
         "AXWindowConstrainer"
     }
 
-    func refresh(barWindow: NSWindow?) {
+    func refresh(barWindow: NSWindow?, regularAppPIDs: [pid_t]) {
         let span = PerformanceDiagnostics.begin(
             category: "window_constrainer",
             name: "ax_refresh",
@@ -55,9 +55,7 @@ final class AXWindowConstrainer: WindowConstraining {
         let usableHeight = barTopQuartz - topQuartz
         let ours = ProcessInfo.processInfo.processIdentifier
 
-        for app in NSWorkspace.shared.runningApplications {
-            guard app.activationPolicy == .regular else { continue }
-            let pid = app.processIdentifier
+        for pid in regularAppPIDs {
             if pid == ours { continue }
 
             let appElement = AXUIElementCreateApplication(pid)
@@ -325,13 +323,13 @@ final class DockInjectionWindowConstrainer: WindowConstraining {
         return fallback.diagnosticsName
     }
 
-    func refresh(barWindow: NSWindow?) {
+    func refresh(barWindow: NSWindow?, regularAppPIDs: [pid_t]) {
         if featureFlags.isEnabled(.realDesktopReservation),
            bridge.supportsPrivateDesktopReservation,
            !featureFlags.isEnabled(.privateMaximizeHandling) {
             return
         }
-        fallback.refresh(barWindow: barWindow)
+        fallback.refresh(barWindow: barWindow, regularAppPIDs: regularAppPIDs)
     }
 
     func shouldHideBar(for barWindow: NSWindow) -> Bool {

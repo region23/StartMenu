@@ -8,11 +8,9 @@ final class MenuBarExtrasService: ObservableObject {
     @Published private(set) var items: [MenuBarExtraInfo] = []
     @Published private(set) var hasAccessibilityAccess = AXIsProcessTrusted()
 
-    private var timer: Timer?
     private var elementsByID: [String: AXUIElement] = [:]
     private let log = Logger(subsystem: AppFlavor.current.logSubsystem, category: "menuextras")
 
-    private static let refreshInterval: TimeInterval = 3.0
     private static let minimumVisibleItemSize = CGSize(width: 8, height: 8)
     private static let excludedOwnerNames: Set<String> = [
         "Control Center",
@@ -52,23 +50,6 @@ final class MenuBarExtrasService: ObservableObject {
     ]
 
     init() {
-        refresh()
-        start()
-    }
-
-    deinit {
-        timer?.invalidate()
-    }
-
-    func start() {
-        timer?.invalidate()
-        let timer = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
     }
 
     func refresh() {

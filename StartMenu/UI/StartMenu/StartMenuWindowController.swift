@@ -14,6 +14,7 @@ final class StartMenuWindowController {
     private weak var ignoreClicksInWindow: NSWindow?
     private var pendingHoverDismiss: DispatchWorkItem?
     private let makeRootView: (UUID) -> StartMenuView
+    private let onVisibilityChanged: (Bool) -> Void
     private var presentationID = UUID()
     private var hasMouseEnteredPanel = false
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -36,10 +37,12 @@ final class StartMenuWindowController {
         autostartService: AutostartService,
         powerUserFeatureFlags: PowerUserFeatureFlags,
         powerUserDiagnosticsStore: PowerUserDiagnosticsStore,
+        onVisibilityChanged: @escaping (Bool) -> Void,
         onLaunch: @escaping (AppInfo) -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.settingsStore = settingsStore
+        self.onVisibilityChanged = onVisibilityChanged
 
         panel = KeyablePanel(
             contentRect: NSRect(origin: .zero, size: Self.scaledSize(settingsStore.uiScale)),
@@ -137,15 +140,18 @@ final class StartMenuWindowController {
                 "height": String(Int(panel.frame.height.rounded()))
             ]
         )
+        onVisibilityChanged(true)
         span.end()
     }
 
     func hide() {
+        guard panel.isVisible else { return }
         pendingHoverDismiss?.cancel()
         pendingHoverDismiss = nil
         hasMouseEnteredPanel = false
         removeClickOutsideMonitors()
         panel.orderOut(nil)
+        onVisibilityChanged(false)
         PerformanceDiagnostics.recordEvent(
             "panel_hidden",
             category: "start_menu"

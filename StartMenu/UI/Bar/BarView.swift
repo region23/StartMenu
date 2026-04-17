@@ -7,6 +7,7 @@ struct BarView: View {
     @ObservedObject var settingsStore: SettingsStore
     let windowController: WindowController
     let onLaunchApp: (AppInfo) -> Void
+    let onInteractionChanged: (Bool) -> Void
     let onStartButtonFrame: (NSRect) -> Void
     let onStartButtonTap: () -> Void
 
@@ -100,6 +101,8 @@ struct BarView: View {
                 .fill(.ultraThinMaterial)
                 .overlay(Color.black.opacity(0.15))
         )
+        .onHover(perform: onInteractionChanged)
+        .onDisappear { onInteractionChanged(false) }
     }
 }
 
@@ -301,7 +304,6 @@ private struct MenuBarExtrasButton: View {
 
     var body: some View {
         Button {
-            service.refresh()
             pendingDismiss?.cancel()
             pendingDismiss = nil
             isPresented.toggle()
@@ -317,6 +319,11 @@ private struct MenuBarExtrasButton: View {
         }
         .buttonStyle(.plain)
         .help("Menu bar items")
+        .onChange(of: isPresented) { _, presented in
+            if presented {
+                service.refresh()
+            }
+        }
         .onHover { inside in
             hovering = inside
             handleHoverChange()

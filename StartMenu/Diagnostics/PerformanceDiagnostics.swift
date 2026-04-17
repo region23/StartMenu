@@ -300,6 +300,7 @@ private actor PerformanceTraceStore {
     }()
 
     private let maxBytes = 1_500_000
+    private var fileHandle: FileHandle?
 
     func append(
         level: String,
@@ -322,15 +323,8 @@ private actor PerformanceTraceStore {
             let data = try encoder.encode(record) + Data([0x0A])
 
             try rotateIfNeeded(incomingByteCount: data.count)
-
-            if FileManager.default.fileExists(atPath: Self.logURL.path) {
-                let handle = try FileHandle(forWritingTo: Self.logURL)
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
-                try handle.close()
-            } else {
-                FileManager.default.createFile(atPath: Self.logURL.path, contents: data)
-            }
+            let handle = try openHandleForAppending()
+            try handle.write(contentsOf: data)
         } catch {
             NSLog("PerformanceTraceStore append failed: %@", String(describing: error))
         }
@@ -338,6 +332,7 @@ private actor PerformanceTraceStore {
 
     func clear() {
         let fileManager = FileManager.default
+        closeHandle()
         try? fileManager.removeItem(at: Self.logURL)
         try? fileManager.removeItem(at: Self.archivedLogURL)
     }
@@ -357,8 +352,29 @@ private actor PerformanceTraceStore {
         let currentSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
         guard currentSize + incomingByteCount > maxBytes else { return }
 
+        closeHandle()
         try? fileManager.removeItem(at: Self.archivedLogURL)
         try fileManager.moveItem(at: Self.logURL, to: Self.archivedLogURL)
+    }
+
+    private func openHandleForAppending() throws -> FileHandle {
+        if let fileHandle {
+            return fileHandle
+        }
+
+        if !FileManager.default.fileExists(atPath: Self.logURL.path) {
+            FileManager.default.createFile(atPath: Self.logURL.path, contents: nil)
+        }
+
+        let handle = try FileHandle(forWritingTo: Self.logURL)
+        try handle.seekToEnd()
+        fileHandle = handle
+        return handle
+    }
+
+    private func closeHandle() {
+        try? fileHandle?.close()
+        fileHandle = nil
     }
 }
 
