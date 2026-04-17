@@ -121,7 +121,7 @@ private struct PinnedAppsStrip: View {
     let onCloseWindow: (WindowInfo) -> Void
     let onMinimizeWindow: (WindowInfo) -> Void
 
-    private var maxWidth: CGFloat {
+    private var stripWidth: CGFloat {
         let chipWidth = CGFloat(42 * scale)
         let spacing = CGFloat(6 * scale)
         let count = CGFloat(items.count)
@@ -162,7 +162,10 @@ private struct PinnedAppsStrip: View {
             }
             .padding(.horizontal, 2)
         }
-        .frame(maxWidth: maxWidth)
+        // ScrollView has no useful intrinsic width inside an HStack, so
+        // `maxWidth` alone lets the pinned strip collapse to zero. Give
+        // it a concrete width derived from the number of pinned apps.
+        .frame(width: stripWidth)
     }
 }
 
