@@ -86,6 +86,8 @@ struct BarView: View {
 
             Spacer(minLength: 8 * scale)
 
+            TrashButton(scale: scale)
+
             MenuBarExtrasButton(
                 service: menuBarExtrasService,
                 scale: scale
@@ -106,20 +108,51 @@ private struct BarSectionDivider: View {
     let emphasized: Bool
 
     private var lineHeight: CGFloat {
-        CGFloat((emphasized ? 30 : 26) * scale)
+        CGFloat((emphasized ? 38 : 30) * scale)
+    }
+
+    private var lineWidth: CGFloat {
+        max(1, CGFloat((emphasized ? 1.2 : 1.0) * scale))
+    }
+
+    private var highlightWidth: CGFloat {
+        max(1, lineWidth * 0.9)
     }
 
     var body: some View {
         ZStack {
-            Capsule()
-                .fill(Color.black.opacity(emphasized ? 0.2 : 0.12))
-                .frame(width: emphasized ? 3 * scale : 2 * scale, height: lineHeight)
+            RoundedRectangle(cornerRadius: lineWidth / 2)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0),
+                            Color.black.opacity(emphasized ? 0.24 : 0.18),
+                            Color.black.opacity(emphasized ? 0.24 : 0.18),
+                            Color.black.opacity(0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: lineWidth, height: lineHeight)
 
-            Capsule()
-                .fill(Color.white.opacity(emphasized ? 0.45 : 0.24))
-                .frame(width: 1, height: lineHeight - 6 * scale)
+            RoundedRectangle(cornerRadius: highlightWidth / 2)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0),
+                            Color.white.opacity(emphasized ? 0.12 : 0.08),
+                            Color.white.opacity(emphasized ? 0.12 : 0.08),
+                            Color.white.opacity(0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: highlightWidth, height: lineHeight - 2 * scale)
+                .offset(x: lineWidth * 0.7)
         }
-        .padding(.horizontal, emphasized ? 6 * scale : 2 * scale)
+        .padding(.horizontal, emphasized ? 9 * scale : 5 * scale)
         .accessibilityHidden(true)
     }
 }
@@ -313,6 +346,40 @@ private struct MenuBarExtrasButton: View {
         }
         pendingDismiss = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.dismissDelay, execute: work)
+    }
+}
+
+private struct TrashButton: View {
+    let scale: Double
+
+    @State private var hovering = false
+
+    private var trashURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash", isDirectory: true)
+    }
+
+    private var icon: NSImage {
+        AppIconService.shared.icon(for: trashURL)
+    }
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.open(trashURL)
+        } label: {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 20 * scale, height: 20 * scale)
+                .frame(width: 36 * scale, height: 36 * scale)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.white.opacity(hovering ? 0.18 : 0.08))
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Trash")
+        .onHover { hovering = $0 }
     }
 }
 
@@ -735,11 +802,12 @@ private struct GroupWindowPicker: View {
     let onActivate: (WindowInfo) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6 * scale) {
+        VStack(alignment: .leading, spacing: 2 * scale) {
             Text(group.ownerName)
                 .font(.system(size: 11 * scale, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
+                .padding(.bottom, 4 * scale)
 
             ForEach(group.windows) { window in
                 GroupWindowPickerRow(
@@ -789,25 +857,21 @@ private struct GroupWindowPickerRow: View {
                     if let subtitle = window.subtitle, !subtitle.isEmpty {
                         Text(window.isMinimized ? "\(subtitle) • Minimized" : subtitle)
                             .font(.system(size: 10 * scale))
-                            .foregroundStyle(isHovered ? Color.white.opacity(0.88) : .secondary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     } else if window.isMinimized {
                         Text("Minimized")
                             .font(.system(size: 10 * scale))
-                            .foregroundStyle(isHovered ? Color.white.opacity(0.88) : .secondary)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10 * scale)
-            .padding(.vertical, 7 * scale)
+            .padding(.horizontal, 8 * scale)
+            .padding(.vertical, 6 * scale)
             .background(rowBackground, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isHovered ? Color.white.opacity(0.2) : Color.clear, lineWidth: 0.5)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
             .animation(.easeOut(duration: 0.12), value: isHovered)
         }
         .buttonStyle(.plain)
@@ -815,7 +879,7 @@ private struct GroupWindowPickerRow: View {
     }
 
     private var rowBackground: Color {
-        isHovered ? Color.accentColor.opacity(0.34) : Color.white.opacity(0.06)
+        Color.white.opacity(isHovered ? 0.22 : 0.0)
     }
 }
 
