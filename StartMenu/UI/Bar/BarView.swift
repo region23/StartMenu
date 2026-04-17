@@ -361,8 +361,11 @@ private struct TrashButton: View {
     }
 
     private var icon: NSImage {
-        let name = isEmpty ? NSImage.trashEmptyName : NSImage.trashFullName
-        let icon = NSImage(named: name) ?? AppIconService.shared.icon(for: trashURL)
+        let name = NSImage.Name(isEmpty ? NSImage.trashEmptyName : NSImage.trashFullName)
+        let icon =
+            (NSImage(named: name)?.copy() as? NSImage) ??
+            (NSWorkspace.shared.icon(forFile: trashURL.path).copy() as? NSImage) ??
+            NSImage()
         icon.size = NSSize(width: 64, height: 64)
         return icon
     }

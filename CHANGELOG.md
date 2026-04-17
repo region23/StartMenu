@@ -3,6 +3,16 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.23 - 2026-04-17
+
+### English
+- Fixed the Trash button icon so it now refreshes to the full system Trash artwork when files are present.
+- Removed the cached Trash icon fallback that could leave the bar stuck showing the empty icon.
+
+### Русский
+- Исправили иконку корзины: теперь при наличии файлов она корректно переключается на системное состояние полной корзины.
+- Убрали кэшированный fallback для иконки Trash, из-за которого бар мог залипать на пустой корзине.
+
 ## 0.3.22 - 2026-04-17
 
 ### English
