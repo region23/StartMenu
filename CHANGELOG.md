@@ -3,6 +3,18 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.20 - 2026-04-17
+
+### English
+- Added a Trash button to the right side of the bar, just before Menu Bar Items, using the native Trash icon and opening the Trash in Finder on click.
+- Refined the pinned-app divider to look closer to the macOS Dock with a taller, thinner separator and a softer highlight.
+- Restyled the multi-window hover popup to match the calmer Start Menu and Menu Bar Items selection look instead of using blue-highlighted rows.
+
+### Русский
+- Добавили кнопку корзины в правую часть бара, сразу перед Menu Bar Items: используется нативная иконка Trash, а по нажатию открывается корзина в Finder.
+- Доработали разделитель у закрепленных приложений, чтобы он был ближе к стилю системного Dock: выше, тоньше и с более мягким бликом.
+- Привели popup со списком окон одного приложения к более спокойному стилю Start Menu и Menu Bar Items, без синего выделения строк.
+
 ## 0.3.19 - 2026-04-17
 
 ### English
