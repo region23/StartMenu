@@ -3,6 +3,16 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.22 - 2026-04-17
+
+### English
+- Fixed the Trash button state so the bar no longer shows an empty Trash icon when the user's Trash still contains files.
+- Trash contents are now detected without filtering out real trashed items as hidden files.
+
+### Русский
+- Исправили состояние кнопки корзины: бар больше не показывает пустую корзину, когда в пользовательской Trash ещё есть файлы.
+- Проверка содержимого корзины теперь не отфильтровывает реальные удалённые файлы как скрытые элементы.
+
 ## 0.3.21 - 2026-04-17
 
 ### English

@@ -403,17 +403,19 @@ private struct TrashButton: View {
     }
 
     private static func isTrashEmpty(at url: URL) -> Bool {
-        let keys: Set<URLResourceKey> = [.isHiddenKey]
         let contents = (try? FileManager.default.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: Array(keys),
+            includingPropertiesForKeys: nil,
             options: [.skipsSubdirectoryDescendants]
         )) ?? []
 
         return !contents.contains { item in
-            let values = try? item.resourceValues(forKeys: keys)
-            let isHidden = values?.isHidden ?? false
-            return !isHidden
+            switch item.lastPathComponent {
+            case ".DS_Store", ".localized":
+                false
+            default:
+                true
+            }
         }
     }
 }
