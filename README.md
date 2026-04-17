@@ -152,12 +152,19 @@ Modules under `StartMenu/`:
 
 ## Releases
 
-To cut a tagged release, build a Release `.app`, package it as a DMG
-(with a drag-to-`/Applications` layout), tag and push, and publish a
-GitHub release with auto-generated release notes:
+To cut a tagged release manually, build a Release `.app`, package it as a
+DMG (with a drag-to-`/Applications` layout), tag and push, and publish a
+GitHub release:
 
 ```sh
 ./scripts/release.sh 0.1.0
+```
+
+If you already prepared custom release notes in Markdown, pass them with
+`--notes-file`:
+
+```sh
+./scripts/release.sh 0.1.0 --notes-file build/release/release-notes-0.1.0.md
 ```
 
 If you use Codex in this repository, there is also a local slash command:
@@ -166,7 +173,13 @@ If you use Codex in this repository, there is also a local slash command:
 /release 0.1.0
 ```
 
-It lives in [release.md](/Users/pavlenko/code/start_menu/.codex/commands/release.md) and wraps the same release flow.
+It lives in [release.md](/Users/pavlenko/code/start_menu/.codex/commands/release.md) and performs the full release workflow:
+
+- inspects commits and diffs since the last release
+- writes a polished bilingual entry into [CHANGELOG.md](/Users/pavlenko/code/start_menu/CHANGELOG.md)
+- writes matching GitHub release notes in English and Russian
+- commits and pushes `main`
+- runs `./scripts/release.sh` with the generated notes file
 
 The script requires a clean working tree on `main`, the `gh` CLI
 authenticated, and `xcodegen` installed. It passes
@@ -177,7 +190,9 @@ commit count on `HEAD`. The DMG is produced with the built-in `hdiutil`
 `/Applications` so users can drag the app in.
 
 Release artifacts land in `build/release/StartMenu-<version>.dmg` and are
-uploaded to the GitHub release as an asset.
+uploaded to the GitHub release as an asset. When `--notes-file` is used,
+that Markdown body is published as the GitHub release description instead of
+GitHub auto-generated notes.
 
 After the GitHub release is live the script also updates the Homebrew
 cask in [region23/homebrew-tap](https://github.com/region23/homebrew-tap)

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Build a Release .app, package it as a zip, create a git tag, publish a
-# GitHub release with auto-generated release notes, and upload the zip.
+# Build a Release .app, package it as a DMG, create a git tag, publish a
+# GitHub release, and mirror the release into the Homebrew cask tap.
 #
 # Usage:
-#   ./scripts/release.sh <version>     # e.g. ./scripts/release.sh 0.1.0
+#   ./scripts/release.sh <version> [--notes-file path]
+#     e.g. ./scripts/release.sh 0.1.0
+#     e.g. ./scripts/release.sh 0.1.0 --notes-file build/release/release-notes-0.1.0.md
 #
 # Requirements:
 #   - gh CLI authenticated against the repo
@@ -14,14 +16,63 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="${1:-}"
+usage() {
+    cat >&2 <<EOF
+usage: $0 <version> [--notes-file path]
+
+Examples:
+  $0 0.1.0
+  $0 0.1.0 --notes-file build/release/release-notes-0.1.0.md
+EOF
+}
+
+VERSION=""
+NOTES_FILE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --notes-file)
+            shift
+            if [ $# -eq 0 ]; then
+                echo "error: --notes-file requires a path" >&2
+                usage
+                exit 1
+            fi
+            NOTES_FILE="$1"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "error: unknown option '$1'" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            if [ -n "$VERSION" ]; then
+                echo "error: unexpected extra argument '$1'" >&2
+                usage
+                exit 1
+            fi
+            VERSION="$1"
+            ;;
+    esac
+    shift
+done
+
 if [ -z "$VERSION" ]; then
-    echo "usage: $0 <version>    (e.g. 0.1.0)" >&2
+    usage
     exit 1
 fi
 
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
     echo "error: version must look like X.Y.Z or X.Y.Z-suffix (got '$VERSION')" >&2
+    exit 1
+fi
+
+if [ -n "$NOTES_FILE" ] && [ ! -f "$NOTES_FILE" ]; then
+    echo "error: notes file '$NOTES_FILE' does not exist" >&2
     exit 1
 fi
 
@@ -149,10 +200,17 @@ git tag -a "$TAG" -m "Release $TAG"
 git push origin "$TAG"
 
 echo "==> Publishing GitHub release"
-gh release create "$TAG" \
-    --title "Start Menu $TAG" \
-    --generate-notes \
-    "$DMG_PATH"
+if [ -n "$NOTES_FILE" ]; then
+    gh release create "$TAG" \
+        --title "Start Menu $TAG" \
+        --notes-file "$NOTES_FILE" \
+        "$DMG_PATH"
+else
+    gh release create "$TAG" \
+        --title "Start Menu $TAG" \
+        --generate-notes \
+        "$DMG_PATH"
+fi
 
 RELEASE_URL=$(gh release view "$TAG" --json url --jq .url)
 

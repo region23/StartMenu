@@ -59,9 +59,12 @@ struct BarView: View {
                     onCloseWindow: { windowController.close($0) },
                     onMinimizeWindow: { windowController.minimize($0) }
                 )
+
+                BarSectionDivider(scale: scale, emphasized: true)
+            } else {
+                BarSectionDivider(scale: scale, emphasized: false)
             }
 
-            Divider().frame(height: 28 * scale).opacity(0.25)
             WindowChipsList(
                 groups: unpinnedGroups,
                 activePID: windowService.activeAppPID,
@@ -95,6 +98,29 @@ struct BarView: View {
                 .fill(.ultraThinMaterial)
                 .overlay(Color.black.opacity(0.15))
         )
+    }
+}
+
+private struct BarSectionDivider: View {
+    let scale: Double
+    let emphasized: Bool
+
+    private var lineHeight: CGFloat {
+        CGFloat((emphasized ? 30 : 26) * scale)
+    }
+
+    var body: some View {
+        ZStack {
+            Capsule()
+                .fill(Color.black.opacity(emphasized ? 0.2 : 0.12))
+                .frame(width: emphasized ? 3 * scale : 2 * scale, height: lineHeight)
+
+            Capsule()
+                .fill(Color.white.opacity(emphasized ? 0.45 : 0.24))
+                .frame(width: 1, height: lineHeight - 6 * scale)
+        }
+        .padding(.horizontal, emphasized ? 6 * scale : 2 * scale)
+        .accessibilityHidden(true)
     }
 }
 
