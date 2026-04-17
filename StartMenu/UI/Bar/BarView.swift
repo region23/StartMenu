@@ -137,12 +137,18 @@ private struct WindowChipsList: View {
     @State private var hoveredPopoverGroupID: pid_t?
     @State private var edgeFrames = EdgeChipFrames()
     @State private var viewportWidth: CGFloat = 0
+    @State private var pendingChipCollapse: DispatchWorkItem?
     @State private var pendingHoverClear: DispatchWorkItem?
 
     private static let coordinateSpaceName = "chipScroll"
     private static let edgeSlack: CGFloat = 1.0
-    private static let hoverAnimation = Animation.easeOut(duration: 0.14)
-    private static let popoverDismissDelay: TimeInterval = 0.22
+    private static let hoverAnimation = Animation.interactiveSpring(
+        response: 0.24,
+        dampingFraction: 0.86,
+        blendDuration: 0.12
+    )
+    private static let compactChipCollapseDelay: TimeInterval = 0.11
+    private static let popoverDismissDelay: TimeInterval = 0.24
 
     private var canScrollLeft: Bool {
         guard let frame = edgeFrames.first else { return false }
@@ -260,6 +266,8 @@ private struct WindowChipsList: View {
     }
 
     private func handleChipHoverChange(_ inside: Bool, for group: WindowGroup) {
+        pendingChipCollapse?.cancel()
+        pendingChipCollapse = nil
         pendingHoverClear?.cancel()
         pendingHoverClear = nil
 
@@ -281,13 +289,13 @@ private struct WindowChipsList: View {
             return
         }
 
-        if hoveredChipID == group.id {
-            hoveredChipID = nil
-        }
+        scheduleChipCollapse(for: group.id)
         scheduleHoverClear(for: group.id)
     }
 
     private func handlePopoverHoverChange(_ inside: Bool, for groupID: pid_t) {
+        pendingChipCollapse?.cancel()
+        pendingChipCollapse = nil
         pendingHoverClear?.cancel()
         pendingHoverClear = nil
 
@@ -306,6 +314,19 @@ private struct WindowChipsList: View {
         scheduleHoverClear(for: groupID)
     }
 
+    private func scheduleChipCollapse(for groupID: pid_t) {
+        let work = DispatchWorkItem {
+            guard hoveredChipID == groupID else { return }
+            guard hoveredPopoverGroupID != groupID else { return }
+            guard popoverGroupID != groupID else { return }
+            withAnimation(Self.hoverAnimation) {
+                hoveredChipID = nil
+            }
+        }
+        pendingChipCollapse = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.compactChipCollapseDelay, execute: work)
+    }
+
     private func scheduleHoverClear(for groupID: pid_t) {
         let work = DispatchWorkItem {
             guard hoveredChipID != groupID else { return }
@@ -321,6 +342,8 @@ private struct WindowChipsList: View {
     }
 
     private func clearHoverState() {
+        pendingChipCollapse?.cancel()
+        pendingChipCollapse = nil
         pendingHoverClear?.cancel()
         pendingHoverClear = nil
         hoveredChipID = nil
@@ -337,15 +360,17 @@ private struct WindowChipsList: View {
                         popoverGroupID = group.id
                     }
                 } else {
-                    if hoveredChipID == group.id {
-                        hoveredChipID = nil
-                    }
-                    if hoveredPopoverGroupID == group.id {
-                        hoveredPopoverGroupID = nil
-                    }
+                    pendingChipCollapse?.cancel()
+                    pendingChipCollapse = nil
                     pendingHoverClear?.cancel()
                     pendingHoverClear = nil
                     withAnimation(Self.hoverAnimation) {
+                        if hoveredChipID == group.id {
+                            hoveredChipID = nil
+                        }
+                        if hoveredPopoverGroupID == group.id {
+                            hoveredPopoverGroupID = nil
+                        }
                         if popoverGroupID == group.id {
                             popoverGroupID = nil
                         }
@@ -471,7 +496,10 @@ private struct WindowChipView: View {
                     .offset(y: 4 * scale)
             }
         }
-        .animation(.easeOut(duration: 0.14), value: showLabel)
+        .animation(
+            .interactiveSpring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.12),
+            value: showLabel
+        )
     }
 
     private var background: Color {
