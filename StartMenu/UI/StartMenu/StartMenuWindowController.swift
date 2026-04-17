@@ -115,6 +115,11 @@ final class StartMenuWindowController {
     }
 
     func show(anchorFrame: NSRect) {
+        let span = PerformanceDiagnostics.begin(
+            category: "start_menu",
+            name: "show_panel",
+            thresholdMs: 10
+        )
         lastAnchorFrame = anchorFrame
         hasMouseEnteredPanel = false
         pendingHoverDismiss?.cancel()
@@ -124,6 +129,15 @@ final class StartMenuWindowController {
         panel.setFrame(layoutFrame(for: anchorFrame), display: true)
         panel.makeKeyAndOrderFront(nil)
         installClickOutsideMonitors()
+        PerformanceDiagnostics.recordEvent(
+            "panel_shown",
+            category: "start_menu",
+            fields: [
+                "width": String(Int(panel.frame.width.rounded())),
+                "height": String(Int(panel.frame.height.rounded()))
+            ]
+        )
+        span.end()
     }
 
     func hide() {
@@ -132,6 +146,10 @@ final class StartMenuWindowController {
         hasMouseEnteredPanel = false
         removeClickOutsideMonitors()
         panel.orderOut(nil)
+        PerformanceDiagnostics.recordEvent(
+            "panel_hidden",
+            category: "start_menu"
+        )
     }
 
     private func relayout() {

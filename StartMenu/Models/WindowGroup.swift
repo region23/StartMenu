@@ -5,7 +5,7 @@ import Foundation
 /// owns every window that belongs to its PID. The representative is the
 /// window we activate on a plain click — prefer a non-minimized window,
 /// fall back to the first one if every window is minimized.
-struct WindowGroup: Identifiable, Hashable {
+struct WindowGroup: Identifiable, Hashable, Sendable {
     let id: pid_t
     let ownerName: String
     let ownerBundleID: String?

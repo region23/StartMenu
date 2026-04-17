@@ -75,8 +75,27 @@ struct StartMenuView: View {
         )
         .onAppear {
             resetPresentationState()
+            PerformanceDiagnostics.recordEvent(
+                "view_appeared",
+                category: "start_menu",
+                fields: ["presentationID": presentationID.uuidString]
+            )
         }
         .onChange(of: presentationID) { _, _ in resetPresentationState() }
+        .onChange(of: mode) { _, newMode in
+            PerformanceDiagnostics.recordEvent(
+                "mode_changed",
+                category: "start_menu",
+                fields: ["mode": modeName(newMode)]
+            )
+        }
+        .onDisappear {
+            PerformanceDiagnostics.recordEvent(
+                "view_disappeared",
+                category: "start_menu",
+                fields: ["presentationID": presentationID.uuidString]
+            )
+        }
         .onHover(perform: onHoverChange)
         .onExitCommand { onDismiss() }
     }
@@ -202,6 +221,9 @@ struct StartMenuView: View {
                         Divider().opacity(0.2)
                         powerUserSection
                     }
+
+                    Divider().opacity(0.2)
+                    performanceDiagnosticsSection
 
                     Divider().opacity(0.2)
 
@@ -330,6 +352,40 @@ struct StartMenuView: View {
                     url: URL(string: "https://github.com/region23/StartMenu")!)
             linkRow(label: "Report an issue",
                     url: URL(string: "https://github.com/region23/StartMenu/issues/new")!)
+        }
+    }
+
+    private var performanceDiagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 8 * scale) {
+            Text("Performance diagnostics")
+                .font(.system(size: 11 * scale, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+
+            Text("Slow operations and main-thread stalls are written to a local trace file while the app runs.")
+                .font(.system(size: 11 * scale))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(verbatim: PerformanceDiagnostics.logURL.path)
+                .font(.system(size: 10 * scale, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8 * scale)
+                .padding(.vertical, 6 * scale)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+
+            actionButtonRow {
+                smallActionButton(title: "Reveal log") {
+                    PerformanceDiagnostics.revealLogInFinder()
+                }
+                smallActionButton(title: "Copy path") {
+                    PerformanceDiagnostics.copyLogPathToPasteboard()
+                }
+                smallActionButton(title: "Clear log") {
+                    PerformanceDiagnostics.clearLogs()
+                }
+            }
         }
     }
 
@@ -544,6 +600,17 @@ struct StartMenuView: View {
 
     private func isSelectedScale(_ option: UIScale) -> Bool {
         abs(option.rawValue - settingsStore.uiScale) < 0.001
+    }
+
+    private func modeName(_ mode: Mode) -> String {
+        switch mode {
+        case .home:
+            return "home"
+        case .allApps:
+            return "allApps"
+        case .settings:
+            return "settings"
+        }
     }
 
     private func rectString(_ rect: CGRect) -> String {

@@ -6,8 +6,13 @@ import Foundation
 
 @MainActor
 final class WindowService: ObservableObject {
-    private static let refreshInterval: TimeInterval = 0.2
-    private static let axDocumentAttribute = "AXDocument" as CFString
+    private nonisolated static let refreshInterval: TimeInterval = 0.2
+    private nonisolated static let constraintRefreshInterval: TimeInterval = 0.35
+    private nonisolated static let axDocumentAttribute = "AXDocument" as CFString
+    private nonisolated static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
+    private nonisolated static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
+    private nonisolated static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
+    private nonisolated static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
 
     @Published private(set) var windows: [WindowInfo] = []
     @Published private(set) var activeAppPID: pid_t?
@@ -19,8 +24,11 @@ final class WindowService: ObservableObject {
     private let windowConstrainer: any WindowConstraining
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var refreshTask: Task<Void, Never>?
+    private var pendingRefreshReasons: Set<String> = []
+    private var lastConstraintRefreshAt: CFAbsoluteTime = 0
 
-    private static let excludedOwnerNames: Set<String> = [
+    private nonisolated static let excludedOwnerNames: Set<String> = [
         "Dock",
         "Window Server",
         "SystemUIServer",
@@ -39,13 +47,14 @@ final class WindowService: ObservableObject {
     init(windowConstrainer: any WindowConstraining) {
         self.windowConstrainer = windowConstrainer
         activeAppPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        refresh()
+        refresh(reason: "startup")
         start()
         observeFrontmost()
     }
 
     deinit {
         timer?.invalidate()
+        refreshTask?.cancel()
         let center = NSWorkspace.shared.notificationCenter
         for obs in workspaceObservers {
             center.removeObserver(obs)
@@ -54,7 +63,7 @@ final class WindowService: ObservableObject {
 
     private func observeFrontmost() {
         let center = NSWorkspace.shared.notificationCenter
-        let token = center.addObserver(
+        let didActivate = center.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
@@ -62,10 +71,10 @@ final class WindowService: ObservableObject {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             Task { @MainActor in
                 self?.activeAppPID = app?.processIdentifier
-                self?.refresh()
+                self?.refresh(reason: "workspace.didActivate")
             }
         }
-        workspaceObservers.append(token)
+        workspaceObservers.append(didActivate)
 
         for name in [
             NSWorkspace.activeSpaceDidChangeNotification,
@@ -79,7 +88,9 @@ final class WindowService: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.refresh() }
+                Task { @MainActor in
+                    self?.refresh(reason: "workspace.\(name.rawValue)")
+                }
             }
             workspaceObservers.append(token)
         }
@@ -88,7 +99,9 @@ final class WindowService: ObservableObject {
     func start() {
         timer?.invalidate()
         let t = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in
+                self?.refresh(reason: "timer")
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -99,67 +112,149 @@ final class WindowService: ObservableObject {
         timer = nil
     }
 
-    func refresh() {
-        let onscreen = collectOnscreenWindows()
-        let minimized = collectMinimizedWindows(excludingIDs: Set(onscreen.map(\.id)))
-        let placeholders = placeholdersForInvisibleApps(existingPIDs: Set((onscreen + minimized).map(\.ownerPID)))
-        let combined = onscreen + minimized + placeholders
+    func refresh(reason: String = "manual") {
+        let runningApps = Self.captureRunningAppSnapshots()
+        let activePID = activeAppPID ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
 
-        let sorted = combined.sorted {
-            if $0.ownerName == $1.ownerName { return $0.id < $1.id }
-            return $0.ownerName.localizedCaseInsensitiveCompare($1.ownerName) == .orderedAscending
+        guard refreshTask == nil else {
+            pendingRefreshReasons.insert(reason)
+            return
         }
 
-        if sorted != windows { windows = sorted }
+        let cycleSpan = PerformanceDiagnostics.begin(
+            category: "window_service",
+            name: "refresh_cycle",
+            thresholdMs: 24,
+            fields: [
+                "reason": reason,
+                "runningApps": String(runningApps.count)
+            ]
+        )
 
-        updateBarVisibility()
-        windowConstrainer.refresh(barWindow: barWindow)
+        refreshTask = Task { [weak self] in
+            let snapshotSpan = PerformanceDiagnostics.begin(
+                category: "window_service",
+                name: "refresh_snapshot_build",
+                thresholdMs: 16,
+                fields: [
+                    "reason": reason,
+                    "runningApps": String(runningApps.count)
+                ]
+            )
+
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                Self.buildRefreshSnapshot(
+                    runningApps: runningApps,
+                    activeAppPID: activePID
+                )
+            }.value
+
+            snapshotSpan.end(extraFields: snapshot.metrics.fields)
+
+            await MainActor.run {
+                guard let self else { return }
+
+                let didWindowsChange = snapshot.windows != self.windows
+
+                if snapshot.activeAppPID != self.activeAppPID {
+                    self.activeAppPID = snapshot.activeAppPID
+                }
+
+                if didWindowsChange {
+                    self.windows = snapshot.windows
+                    PerformanceDiagnostics.recordEvent(
+                        "window_snapshot_changed",
+                        category: "window_service",
+                        fields: snapshot.metrics.fields.merging(
+                            [
+                                "reason": reason,
+                                "windows": String(snapshot.windows.count)
+                            ]
+                        ) { _, new in new }
+                    )
+                }
+
+                self.updateBarVisibility()
+                self.refreshWindowConstraintsIfNeeded(
+                    reason: reason,
+                    force: didWindowsChange || reason != "timer"
+                )
+
+                cycleSpan.end(
+                    extraFields: snapshot.metrics.fields.merging(
+                        [
+                            "reason": reason,
+                            "changed": String(didWindowsChange),
+                            "windows": String(snapshot.windows.count)
+                        ]
+                    ) { _, new in new }
+                )
+
+                self.refreshTask = nil
+
+                if !self.pendingRefreshReasons.isEmpty {
+                    let nextReason = self.coalescedReasonSummary()
+                    self.pendingRefreshReasons.removeAll()
+                    self.refresh(reason: nextReason)
+                }
+            }
+        }
     }
 
-    /// For every running `.regular` application that wasn't picked up
-    /// via CGWindowList or the AX minimized scan, synthesize a single
-    /// placeholder window so the bar still shows a chip. This catches
-    /// three cases in one net:
-    ///
-    /// 1. Chromium/Electron apps (Claude, VSCode, Cursor, ...) that
-    ///    return `kAXErrorAPIDisabled` from the AX API. Once their
-    ///    window gets minimized it vanishes from CGWindowList too, and
-    ///    without a placeholder the chip would disappear.
-    /// 2. Apps where the user closed the last window with the red
-    ///    traffic light but the process is still alive and can accept
-    ///    a reopen event.
-    /// 3. Apps whose visible windows live on a different Space.
-    private func placeholdersForInvisibleApps(existingPIDs: Set<pid_t>) -> [WindowInfo] {
-        let ours = ProcessInfo.processInfo.processIdentifier
-        var result: [WindowInfo] = []
+    private func coalescedReasonSummary() -> String {
+        let reasons = pendingRefreshReasons.sorted()
+        guard !reasons.isEmpty else { return "coalesced" }
+        let prefix = reasons.prefix(3).joined(separator: ",")
+        let suffix = reasons.count > 3 ? ",…" : ""
+        return "coalesced[\(prefix)\(suffix)]"
+    }
 
-        for app in NSWorkspace.shared.runningApplications {
-            guard app.activationPolicy == .regular else { continue }
-            let pid = app.processIdentifier
-            if pid == ours { continue }
-            if existingPIDs.contains(pid) { continue }
-            let name = app.localizedName ?? ""
-            if Self.excludedOwnerNames.contains(name) { continue }
-            if name.isEmpty { continue }
-
-            let synthID = CGWindowID(0xE000_0000 | (UInt32(bitPattern: pid) & 0x1FFF_FFFF))
-
-            result.append(WindowInfo(
-                id: synthID,
-                ownerPID: pid,
-                ownerBundleID: app.bundleIdentifier,
-                ownerName: name,
-                title: "",
-                label: name,
-                subtitle: nil,
-                bounds: .zero,
-                layer: 0,
-                isOnScreen: false,
-                isMinimized: true
-            ))
+    private func refreshWindowConstraintsIfNeeded(reason: String, force: Bool) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard force || now - lastConstraintRefreshAt >= Self.constraintRefreshInterval else {
+            return
         }
+        lastConstraintRefreshAt = now
 
-        return result
+        let span = PerformanceDiagnostics.begin(
+            category: "window_constrainer",
+            name: "refresh",
+            thresholdMs: 18,
+            fields: ["reason": reason]
+        )
+        windowConstrainer.refresh(barWindow: barWindow)
+        span.end()
+    }
+
+    private struct RunningAppSnapshot: Sendable {
+        let pid: pid_t
+        let bundleID: String?
+        let localizedName: String
+        let isRegular: Bool
+    }
+
+    private struct RefreshMetrics: Sendable {
+        let runningRegularAppCount: Int
+        let onscreenCount: Int
+        let minimizedCount: Int
+        let placeholderCount: Int
+        let axLookupPIDCount: Int
+
+        var fields: [String: String] {
+            [
+                "runningRegularApps": String(runningRegularAppCount),
+                "onscreen": String(onscreenCount),
+                "minimized": String(minimizedCount),
+                "placeholders": String(placeholderCount),
+                "axLookupPIDs": String(axLookupPIDCount)
+            ]
+        }
+    }
+
+    private struct RefreshSnapshot: Sendable {
+        let activeAppPID: pid_t?
+        let windows: [WindowInfo]
+        let metrics: RefreshMetrics
     }
 
     private struct AXWindowDetails {
@@ -182,6 +277,101 @@ final class WindowService: ObservableObject {
         let layer: Int
     }
 
+    private static func captureRunningAppSnapshots() -> [RunningAppSnapshot] {
+        NSWorkspace.shared.runningApplications.map { app in
+            RunningAppSnapshot(
+                pid: app.processIdentifier,
+                bundleID: app.bundleIdentifier,
+                localizedName: app.localizedName ?? "",
+                isRegular: app.activationPolicy == .regular
+            )
+        }
+    }
+
+    private nonisolated static func buildRefreshSnapshot(
+        runningApps: [RunningAppSnapshot],
+        activeAppPID: pid_t?
+    ) -> RefreshSnapshot {
+        let onscreenResult = collectOnscreenWindows(runningApps: runningApps)
+        let onscreen = onscreenResult.windows
+        let minimized = collectMinimizedWindows(
+            runningApps: runningApps,
+            excludingIDs: Set(onscreen.map(\.id))
+        )
+        let placeholders = placeholdersForInvisibleApps(
+            runningApps: runningApps,
+            existingPIDs: Set((onscreen + minimized).map(\.ownerPID))
+        )
+        let combined = onscreen + minimized + placeholders
+
+        let sorted = combined.sorted {
+            if $0.ownerName == $1.ownerName { return $0.id < $1.id }
+            return $0.ownerName.localizedCaseInsensitiveCompare($1.ownerName) == .orderedAscending
+        }
+
+        return RefreshSnapshot(
+            activeAppPID: activeAppPID,
+            windows: sorted,
+            metrics: RefreshMetrics(
+                runningRegularAppCount: runningApps.filter(\.isRegular).count,
+                onscreenCount: onscreen.count,
+                minimizedCount: minimized.count,
+                placeholderCount: placeholders.count,
+                axLookupPIDCount: onscreenResult.axLookupPIDCount
+            )
+        )
+    }
+
+    /// For every running `.regular` application that wasn't picked up
+    /// via CGWindowList or the AX minimized scan, synthesize a single
+    /// placeholder window so the bar still shows a chip. This catches
+    /// three cases in one net:
+    ///
+    /// 1. Chromium/Electron apps (Claude, VSCode, Cursor, ...) that
+    ///    return `kAXErrorAPIDisabled` from the AX API. Once their
+    ///    window gets minimized it vanishes from CGWindowList too, and
+    ///    without a placeholder the chip would disappear.
+    /// 2. Apps where the user closed the last window with the red
+    ///    traffic light but the process is still alive and can accept
+    ///    a reopen event.
+    /// 3. Apps whose visible windows live on a different Space.
+    private nonisolated static func placeholdersForInvisibleApps(
+        runningApps: [RunningAppSnapshot],
+        existingPIDs: Set<pid_t>
+    ) -> [WindowInfo] {
+        let ours = ProcessInfo.processInfo.processIdentifier
+        var result: [WindowInfo] = []
+
+        for app in runningApps {
+            guard app.isRegular else { continue }
+            let pid = app.pid
+            if pid == ours { continue }
+            if existingPIDs.contains(pid) { continue }
+
+            let name = app.localizedName
+            if Self.excludedOwnerNames.contains(name) { continue }
+            if name.isEmpty { continue }
+
+            let synthID = CGWindowID(0xE000_0000 | (UInt32(bitPattern: pid) & 0x1FFF_FFFF))
+
+            result.append(WindowInfo(
+                id: synthID,
+                ownerPID: pid,
+                ownerBundleID: app.bundleID,
+                ownerName: name,
+                title: "",
+                label: name,
+                subtitle: nil,
+                bounds: .zero,
+                layer: 0,
+                isOnScreen: false,
+                isMinimized: true
+            ))
+        }
+
+        return result
+    }
+
     private func updateBarVisibility() {
         guard let bar = barWindow else { return }
 
@@ -193,14 +383,14 @@ final class WindowService: ObservableObject {
         }
     }
 
-    private func copyAXString(_ element: AXUIElement, attribute: CFString) -> String {
+    private nonisolated static func copyAXString(_ element: AXUIElement, attribute: CFString) -> String {
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success,
               let raw = valueRef as? String else { return "" }
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func parseDocumentPath(_ raw: String?) -> String? {
+    private nonisolated static func parseDocumentPath(_ raw: String?) -> String? {
         guard let raw else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -211,7 +401,7 @@ final class WindowService: ObservableObject {
         return trimmed
     }
 
-    private func stripAppNameSuffix(from title: String, ownerName: String) -> String {
+    private nonisolated static func stripAppNameSuffix(from title: String, ownerName: String) -> String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
@@ -224,7 +414,7 @@ final class WindowService: ObservableObject {
         return trimmed
     }
 
-    private func resolveWindowLabel(
+    private nonisolated static func resolveWindowLabel(
         ownerName: String,
         cgTitle: String,
         axTitle: String,
@@ -266,12 +456,7 @@ final class WindowService: ObservableObject {
         )
     }
 
-    private static let axFocusedWindowAttribute = kAXFocusedWindowAttribute as CFString
-    private static let axMainWindowAttribute = kAXMainWindowAttribute as CFString
-    private static let axManualAccessibilityAttribute = "AXManualAccessibility" as CFString
-    private static let axEnhancedUserInterfaceAttribute = "AXEnhancedUserInterface" as CFString
-
-    private func copyAXWindows(for appElement: AXUIElement) -> [AXUIElement] {
+    private nonisolated static func copyAXWindows(for appElement: AXUIElement) -> [AXUIElement] {
         var windowsRef: CFTypeRef?
         var listErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
 
@@ -296,20 +481,20 @@ final class WindowService: ObservableObject {
         return fallback
     }
 
-    private func wakeAccessibilityTree(for appElement: AXUIElement) {
+    private nonisolated static func wakeAccessibilityTree(for appElement: AXUIElement) {
         AXUIElementSetAttributeValue(appElement, Self.axManualAccessibilityAttribute, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appElement, Self.axEnhancedUserInterfaceAttribute, kCFBooleanTrue)
     }
 
-    private func copyAXWindow(_ appElement: AXUIElement, attribute: CFString) -> AXUIElement? {
+    private nonisolated static func copyAXWindow(_ appElement: AXUIElement, attribute: CFString) -> AXUIElement? {
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, attribute, &valueRef) == .success,
               let window = valueRef else { return nil }
         return unsafeBitCast(window, to: AXUIElement.self)
     }
 
-    private func copyAXWindowDetailsByID(for app: NSRunningApplication) -> [CGWindowID: AXWindowDetails] {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+    private nonisolated static func copyAXWindowDetailsByID(for pid: pid_t) -> [CGWindowID: AXWindowDetails] {
+        let appElement = AXUIElementCreateApplication(pid)
         let axWindows = copyAXWindows(for: appElement)
         guard !axWindows.isEmpty else { return [:] }
 
@@ -327,19 +512,21 @@ final class WindowService: ObservableObject {
 
     // MARK: - Onscreen
 
-    private func collectOnscreenWindows() -> [WindowInfo] {
+    private nonisolated static func collectOnscreenWindows(
+        runningApps: [RunningAppSnapshot]
+    ) -> (windows: [WindowInfo], axLookupPIDCount: Int) {
         let ours = ProcessInfo.processInfo.processIdentifier
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return []
+            return ([], 0)
         }
 
-        let running = NSWorkspace.shared.runningApplications
-        let appsByPID = Dictionary(uniqueKeysWithValues: running.map { ($0.processIdentifier, $0) })
-        let bundleByPID = Dictionary(uniqueKeysWithValues: running.compactMap { app -> (pid_t, String)? in
-            guard let bid = app.bundleIdentifier else { return nil }
-            return (app.processIdentifier, bid)
-        })
+        let bundleByPID = Dictionary(
+            uniqueKeysWithValues: runningApps.compactMap { app -> (pid_t, String)? in
+                guard let bid = app.bundleID else { return nil }
+                return (app.pid, bid)
+            }
+        )
 
         let snapshots = raw.compactMap { entry -> OnscreenWindowSnapshot? in
             guard
@@ -390,11 +577,10 @@ final class WindowService: ObservableObject {
 
         var axDetailsByWindowID: [CGWindowID: AXWindowDetails] = [:]
         for pid in pidsNeedingAXTitles {
-            guard let app = appsByPID[pid] else { continue }
-            axDetailsByWindowID.merge(copyAXWindowDetailsByID(for: app)) { current, _ in current }
+            axDetailsByWindowID.merge(copyAXWindowDetailsByID(for: pid)) { current, _ in current }
         }
 
-        return snapshots.map { snapshot in
+        let windows = snapshots.map { snapshot in
             let axDetails = axDetailsByWindowID[snapshot.id]
             let axTitle = axDetails?.title ?? ""
             let rawTitle = axTitle.isEmpty
@@ -421,20 +607,25 @@ final class WindowService: ObservableObject {
                 isMinimized: false
             )
         }
+
+        return (windows, pidsNeedingAXTitles.count)
     }
 
     // MARK: - Minimized (AX scan)
 
-    private func collectMinimizedWindows(excludingIDs: Set<CGWindowID>) -> [WindowInfo] {
+    private nonisolated static func collectMinimizedWindows(
+        runningApps: [RunningAppSnapshot],
+        excludingIDs: Set<CGWindowID>
+    ) -> [WindowInfo] {
         let ours = ProcessInfo.processInfo.processIdentifier
         var result: [WindowInfo] = []
 
-        for app in NSWorkspace.shared.runningApplications {
-            guard app.activationPolicy == .regular else { continue }
-            let pid = app.processIdentifier
+        for app in runningApps {
+            guard app.isRegular else { continue }
+            let pid = app.pid
             if pid == ours { continue }
 
-            let ownerName = app.localizedName ?? ""
+            let ownerName = app.localizedName
             if Self.excludedOwnerNames.contains(ownerName) { continue }
 
             let appElement = AXUIElementCreateApplication(pid)
@@ -471,7 +662,9 @@ final class WindowService: ObservableObject {
                     hasher.combine(index)
                     // Put synthetic ids in the high 1G range to avoid
                     // colliding with real CGWindowIDs (small integers).
-                    resolvedID = CGWindowID(0xC000_0000 | UInt32(truncatingIfNeeded: hasher.finalize() & 0x3FFF_FFFF))
+                    resolvedID = CGWindowID(
+                        0xC000_0000 | UInt32(truncatingIfNeeded: hasher.finalize() & 0x3FFF_FFFF)
+                    )
                 }
 
                 if excludingIDs.contains(resolvedID) { continue }
@@ -479,7 +672,7 @@ final class WindowService: ObservableObject {
                 result.append(WindowInfo(
                     id: resolvedID,
                     ownerPID: pid,
-                    ownerBundleID: app.bundleIdentifier,
+                    ownerBundleID: app.bundleID,
                     ownerName: ownerName,
                     title: title,
                     label: resolved.title,
@@ -490,7 +683,6 @@ final class WindowService: ObservableObject {
                     isMinimized: true
                 ))
             }
-
         }
 
         return result

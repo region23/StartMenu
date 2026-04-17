@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-struct WindowInfo: Identifiable, Hashable {
+struct WindowInfo: Identifiable, Hashable, Sendable {
     let id: CGWindowID
     let ownerPID: pid_t
     let ownerBundleID: String?

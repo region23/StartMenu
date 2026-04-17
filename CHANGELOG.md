@@ -3,6 +3,16 @@
 This changelog is maintained in English and Russian by the local `/release`
 command.
 
+## 0.3.24 - 2026-04-17
+
+### English
+- Added built-in performance diagnostics: the app now writes local trace logs for slow operations and main-thread stalls, with controls in Settings to reveal, copy, or clear the log file.
+- Reduced UI hitching by moving heavy window snapshot rebuilding off the main thread, coalescing overlapping refreshes, and easing how often window constraining runs.
+
+### Русский
+- Добавили встроенную performance-диагностику: приложение теперь пишет локальный trace-лог медленных операций и подвисаний main thread, а в Settings появились кнопки открыть, скопировать путь или очистить лог.
+- Уменьшили подлагивания интерфейса: тяжёлую пересборку снапшотов окон вынесли с main thread, overlapping refresh'и теперь коалессятся, а window constraining выполняется мягче и реже.
+
 ## 0.3.23 - 2026-04-17
 
 ### English

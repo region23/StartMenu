@@ -9,13 +9,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startMenuWindowController: StartMenuWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     private let hotkeyService = HotkeyService()
+    private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var sigtermSource: DispatchSourceSignal?
     private var sigintSource: DispatchSourceSignal?
     private var cancellables: Set<AnyCancellable> = []
     private var workspaceObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let launchSpan = PerformanceDiagnostics.begin(
+            category: "lifecycle",
+            name: "application_did_finish_launching",
+            thresholdMs: 30,
+            alwaysRecord: true
+        )
         NSApp.setActivationPolicy(.accessory)
+        mainThreadStallMonitor.start()
 
         // Cocoa doesn't handle SIGTERM/SIGINT by default — the process just
         // dies and applicationWillTerminate never runs, leaving the Dock in
@@ -77,6 +85,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !environment.permissionsService.hasAccessibility {
             showOnboarding()
         }
+
+        PerformanceDiagnostics.recordEvent(
+            "application_launched",
+            category: "lifecycle",
+            level: .notice,
+            fields: [
+                "bundleID": AppFlavor.current.bundleIdentifier,
+                "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+                "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
+                "pid": String(ProcessInfo.processInfo.processIdentifier)
+            ]
+        )
+        launchSpan.end()
     }
 
     private func configureDockMode() {
@@ -146,6 +167,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        mainThreadStallMonitor.stop()
+        PerformanceDiagnostics.recordEvent(
+            "application_will_terminate",
+            category: "lifecycle",
+            level: .notice
+        )
         if environment.dockControlService.hasManagedDockState {
             environment.dockControlService.restore()
         }

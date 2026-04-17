@@ -3,7 +3,7 @@ import ApplicationServices
 import Foundation
 import os.log
 
-struct DisplayMetricsSnapshot: Equatable {
+struct DisplayMetricsSnapshot: Equatable, Sendable {
     let displayName: String
     let frame: CGRect
     let visibleFrame: CGRect
@@ -34,8 +34,17 @@ final class AXWindowConstrainer: WindowConstraining {
     }
 
     func refresh(barWindow: NSWindow?) {
+        let span = PerformanceDiagnostics.begin(
+            category: "window_constrainer",
+            name: "ax_refresh",
+            thresholdMs: 18
+        )
+        defer { span.end() }
+
         guard let barWindow,
+              barWindow.isVisible,
               let screen = barWindow.screen ?? NSScreen.main else { return }
+        guard AXIsProcessTrusted() else { return }
 
         if isAnyAppInNativeFullscreen(on: screen) { return }
 
@@ -116,6 +125,13 @@ final class AXWindowConstrainer: WindowConstraining {
     }
 
     func shouldHideBar(for barWindow: NSWindow) -> Bool {
+        let span = PerformanceDiagnostics.begin(
+            category: "window_constrainer",
+            name: "fullscreen_probe",
+            thresholdMs: 8
+        )
+        defer { span.end() }
+
         guard let screen = barWindow.screen ?? NSScreen.main ?? NSScreen.screens.first else {
             return false
         }

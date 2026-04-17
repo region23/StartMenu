@@ -20,18 +20,38 @@ final class StartMenuService: ObservableObject {
     }
 
     func rescan() async {
+        let span = PerformanceDiagnostics.begin(
+            category: "start_menu",
+            name: "rescan_apps",
+            thresholdMs: 40,
+            fields: ["roots": String(searchRoots.count)],
+            alwaysRecord: true
+        )
         let roots = searchRoots
         let discovered: [AppInfo] = await Task.detached(priority: .userInitiated) {
             Self.scan(roots: roots)
         }.value
         self.apps = discovered.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        span.end(extraFields: ["apps": String(apps.count)])
     }
 
     func search(_ query: String) -> [AppInfo] {
+        let span = PerformanceDiagnostics.begin(
+            category: "start_menu",
+            name: "search_apps",
+            thresholdMs: 4,
+            fields: [
+                "queryLength": String(query.count),
+                "catalogSize": String(apps.count)
+            ]
+        )
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return apps }
+        guard !q.isEmpty else {
+            span.end(extraFields: ["results": String(apps.count), "emptyQuery": "true"])
+            return apps
+        }
         let lower = q.lowercased()
-        return apps
+        let results = apps
             .compactMap { app -> (AppInfo, Int)? in
                 let name = app.name.lowercased()
                 if name == lower { return (app, 0) }
@@ -44,6 +64,8 @@ final class StartMenuService: ObservableObject {
                 return lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
             }
             .map { $0.0 }
+        span.end(extraFields: ["results": String(results.count)])
+        return results
     }
 
     // MARK: - Scanning (nonisolated)

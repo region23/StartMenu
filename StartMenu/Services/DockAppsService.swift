@@ -29,6 +29,12 @@ final class DockAppsService: ObservableObject {
     ]
 
     func refresh() {
+        let span = PerformanceDiagnostics.begin(
+            category: "dock",
+            name: "refresh_pinned_apps",
+            thresholdMs: 8,
+            alwaysRecord: true
+        )
         let key = "persistent-apps" as CFString
         let appID = "com.apple.dock" as CFString
         let raw = CFPreferencesCopyAppValue(key, appID) as? [[String: Any]] ?? []
@@ -64,5 +70,6 @@ final class DockAppsService: ObservableObject {
         }
 
         self.apps = result
+        span.end(extraFields: ["apps": String(result.count)])
     }
 }
